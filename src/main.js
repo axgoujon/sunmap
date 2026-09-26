@@ -4,10 +4,20 @@ import { Renderer, MODES } from './renderer.js';
 import { sunPosition } from './solar.js';
 import { clearSky, surfaceIrradiance, integrate } from './radiation.js';
 import { horizonProfile, horizonAt, skyViewFactor, directBeamFactor } from './horizon.js';
-import { TERRAIN_SOURCE } from './tiles.js';
+import { TERRAIN_SOURCE, metersPerPixel } from './tiles.js';
 
 const STEP_MINUTES = 15;
-const FIELD_SIZE = 1536;
+
+// Below this map zoom the terrain sample would be coarser than the landforms
+// that cast the shadows, producing an overlay that looks unrelated to the
+// topography. Refusing to compute is more honest than showing mush.
+const MIN_MAP_ZOOM = 11;
+const MIN_TERRAIN_ZOOM = 12;
+const MAX_TERRAIN_ZOOM = 14;
+const MAX_FIELD = 2048;
+const MIN_FIELD = 1024;
+// Shadows are cast from outside the viewport, so the field overhangs it.
+const SHADOW_MARGIN = 1.35;
 
 const el = (id) => document.getElementById(id);
 const status = el('status');
@@ -59,23 +69,58 @@ try {
 
 // ---------------------------------------------------------------- terrain
 
+/**
+ * Pick the finest terrain zoom whose field still covers the viewport plus a
+ * shadow margin without exceeding the texture budget.
+ */
+function fieldPlan() {
+  const lat = map.getCenter().lat;
+  const spanMetres = metersPerPixel(lat, map.getZoom()) * map.getCanvas().clientWidth;
+  const wanted = spanMetres * SHADOW_MARGIN;
+  for (let z = MAX_TERRAIN_ZOOM; z >= MIN_TERRAIN_ZOOM; z--) {
+    const size = Math.ceil(wanted / metersPerPixel(lat, z));
+    if (size <= MAX_FIELD) return { zoom: z, size: Math.max(MIN_FIELD, size) };
+  }
+  return { zoom: MIN_TERRAIN_ZOOM, size: MAX_FIELD };
+}
+
+function setOverlayVisible(visible) {
+  if (map.getLayer('sun')) {
+    map.setLayoutProperty('sun', 'visibility', visible ? 'visible' : 'none');
+  }
+}
+
+function tooFarOut() {
+  return map.getZoom() < MIN_MAP_ZOOM;
+}
+
+function showZoomHint() {
+  state.hf = null;
+  setOverlayVisible(false);
+  el('zoomHint').hidden = false;
+  say('Zoom in to compute sun exposure');
+}
+
 async function loadForView() {
   if (!state.renderer || state.busy) return;
+  if (tooFarOut()) { showZoomHint(); return; }
+  el('zoomHint').hidden = true;
   const token = ++state.token;
   const c = map.getCenter();
-  const zoom = Math.max(10, Math.min(13, Math.round(map.getZoom())));
+  const { zoom, size: fieldSize } = fieldPlan();
 
   state.busy = true;
   say('Loading terrain…', true);
   try {
     const hf = await loadHeightfield({
-      lat: c.lat, lon: c.lng, zoom, size: FIELD_SIZE, decode: decodeImage, concurrency: 12,
+      lat: c.lat, lon: c.lng, zoom, size: fieldSize, decode: decodeImage, concurrency: 12,
     });
     if (token !== state.token) return;
     state.hf = hf;
     state.zoom = zoom;
     state.renderer.setHeightfield(hf);
     attachOverlay(hf);
+    setOverlayVisible(true);
     say(`Terrain ready — ${hf.metresPerPixel.toFixed(0)} m/px, ${(hf.width * hf.metresPerPixel / 1000).toFixed(0)} km across`);
     await render();
   } catch (err) {
@@ -382,6 +427,8 @@ el('closeInspector').addEventListener('click', () => {
 
 el('panelToggle').addEventListener('click', () => el('panel').classList.toggle('hidden'));
 
+el('zoomIn').addEventListener('click', () => map.easeTo({ zoom: Math.max(MIN_MAP_ZOOM + 0.5, map.getZoom() + 2) }));
+
 map.on('error', (e) => {
   console.error('map error', e && e.error);
   say(`Map error: ${e?.error?.message ?? 'unknown'}`);
@@ -397,9 +444,10 @@ let moveTimer;
 map.on('moveend', () => {
   clearTimeout(moveTimer);
   moveTimer = setTimeout(() => {
+    if (tooFarOut()) { showZoomHint(); return; }
     const c = map.getCenter();
-    const zoomChanged = Math.abs(Math.round(map.getZoom()) - state.zoom) >= 1;
-    if (!state.hf || zoomChanged || !contains(state.hf, c.lat, c.lng)) loadForView();
+    const plan = fieldPlan();
+    if (!state.hf || plan.zoom !== state.zoom || !contains(state.hf, c.lat, c.lng)) loadForView();
   }, 400);
 });
 

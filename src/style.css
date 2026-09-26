@@ -143,3 +143,15 @@ footer a { color: #6e7681; }
   #panelToggle { left: auto; right: 12px; }
   #panel.hidden ~ #panelToggle { left: auto; }
 }
+
+.hint {
+  font-size: 11.5px; color: var(--dim); line-height: 1.5;
+  border-left: 2px solid var(--accent); padding-left: 10px;
+}
+.hint strong { color: var(--accent); display: block; margin-bottom: 3px; font-size: 12px; }
+.hint button {
+  display: block; margin-top: 9px; background: var(--accent-dim); color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 6px; padding: 6px 12px;
+  font-size: 11.5px; cursor: pointer;
+}
+.hint button:hover { background: #4d3a1c; }
