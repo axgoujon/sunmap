@@ -68,7 +68,8 @@ test('ground sample distance halves with each zoom level', () => {
 
 test('terrarium decoding covers the documented range', () => {
   assert.equal(decodeTerrarium(128, 0, 0), 0);
-  assert.ok(Math.abs(decodeTerrarium(146, 213, 0) - 4805) < 1);
+  assert.ok(Math.abs(decodeTerrarium(146, 197, 0) - 4805) < 1);
+  assert.equal(decodeTerrarium(146, 213, 0), 4821);
   assert.equal(decodeTerrarium(0, 0, 0), -32768);
 });
 
