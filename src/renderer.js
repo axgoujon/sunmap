@@ -8,7 +8,7 @@ import { clearSky } from './radiation.js';
 
 export const MODES = { binary: 0, power: 1, energy: 2, sunHours: 3, slope: 4 };
 
-const MARCH = { firstStep: 0.7, growth: 1.035, maxDistanceMetres: 150000 };
+const MARCH = { firstStep: 0.7, growth: 1.02, lodBias: -1.0, maxDistanceMetres: 150000 };
 
 export class Renderer {
   constructor(canvas) {
@@ -23,6 +23,7 @@ export class Renderer {
     this.uniforms = Object.fromEntries(
       Object.entries(this.programs).map(([k, p]) => [k, uniformSetter(gl, p)])
     );
+    this.march = { ...MARCH };
     this.fbo = gl.createFramebuffer();
     this.vao = gl.createVertexArray();
     this.field = null;
@@ -46,7 +47,7 @@ export class Renderer {
     this.release();
 
     const levels = mipLevels(width, height);
-    this.heightTex = createFloatTexture(gl, width, height, levels);
+    this.heightTex = createFloatTexture(gl, width, height, levels, true);
     gl.bindTexture(gl.TEXTURE_2D, this.heightTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.FLOAT, hf.data);
 
@@ -88,9 +89,10 @@ export class Renderer {
     const { width, height, metresPerPixel } = this.field;
     u.v2('uSize', width, height);
     u.f('uMpp', metresPerPixel);
-    u.f('uMaxDistPx', MARCH.maxDistanceMetres / metresPerPixel);
-    u.f('uFirstStep', MARCH.firstStep);
-    u.f('uGrowth', MARCH.growth);
+    u.f('uMaxDistPx', this.march.maxDistanceMetres / metresPerPixel);
+    u.f('uFirstStep', this.march.firstStep);
+    u.f('uGrowth', this.march.growth);
+    u.f('uLodBias', this.march.lodBias);
   }
 
   buildSkyView(azimuths = 16) {

@@ -1,5 +1,11 @@
 export function createContext(canvas) {
-  const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
+  const gl = canvas.getContext('webgl2', {
+    antialias: false,
+    preserveDrawingBuffer: true,
+    // The colorize pass emits straight alpha; premultiplying would wash the
+    // basemap out wherever the overlay is translucent.
+    premultipliedAlpha: false,
+  });
   if (!gl) throw new Error('WebGL2 is required and is not available in this browser.');
   const float = gl.getExtension('EXT_color_buffer_float');
   if (!float) throw new Error('WebGL2 float render targets (EXT_color_buffer_float) are required.');
@@ -57,14 +63,19 @@ export function uniformSetter(gl, prog) {
   };
 }
 
-export function createFloatTexture(gl, width, height, levels = 1) {
+export function createFloatTexture(gl, width, height, levels = 1, linear = false) {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texStorage2D(gl.TEXTURE_2D, levels, gl.R32F, width, height);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, levels > 1 ? gl.NEAREST_MIPMAP_NEAREST : gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  // Linear sampling of the heightfield matters: nearest picks a single texel,
+  // which in steep terrain is often a local maximum and casts false shadows.
+  const min = linear
+    ? (levels > 1 ? gl.LINEAR_MIPMAP_NEAREST : gl.LINEAR)
+    : (levels > 1 ? gl.NEAREST_MIPMAP_NEAREST : gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, min);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, linear ? gl.LINEAR : gl.NEAREST);
   return tex;
 }
 

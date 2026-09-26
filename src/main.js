@@ -323,10 +323,19 @@ function updateSunLine() {
     : `sun is <b>below the horizon</b> · ${tz}`;
 }
 
-el('date').valueAsDate = state.date;
+// The date input speaks UTC through valueAsDate, but every calculation here
+// runs on local wall-clock time. Parsing the string keeps them in the same day.
+const toInputValue = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const fromInputValue = (v) => {
+  const [y, m, d] = v.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+
+el('date').value = toInputValue(state.date);
 el('date').addEventListener('change', (e) => {
-  if (!e.target.valueAsDate) return;
-  state.date = e.target.valueAsDate;
+  if (!e.target.value) return;
+  state.date = fromInputValue(e.target.value);
   updateSunLine();
   render();
   if (state.point) inspect(state.point);
@@ -373,6 +382,11 @@ el('closeInspector').addEventListener('click', () => {
 
 el('panelToggle').addEventListener('click', () => el('panel').classList.toggle('hidden'));
 
+map.on('error', (e) => {
+  console.error('map error', e && e.error);
+  say(`Map error: ${e?.error?.message ?? 'unknown'}`);
+});
+
 map.on('click', (e) => inspect(e.lngLat));
 map.on('load', () => {
   el('attribution').innerHTML = `${TERRAIN_SOURCE.attribution}<br>Basemap © OpenFreeMap, © OpenStreetMap contributors`;
@@ -390,3 +404,5 @@ map.on('moveend', () => {
 });
 
 updateSunLine();
+
+window.__sunmap = { map, state, loadForView, render, inspect };

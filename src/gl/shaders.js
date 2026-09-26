@@ -8,6 +8,7 @@ uniform float uMpp;
 uniform float uMaxDistPx;
 uniform float uFirstStep;
 uniform float uGrowth;
+uniform float uLodBias;
 
 float heightAt(ivec2 p) {
   return texelFetch(uHeight, clamp(p, ivec2(0), ivec2(uSize) - 1), 0).r;
@@ -24,7 +25,7 @@ float horizonTangent(vec2 p0, float z0, vec2 dir) {
     if (d > uMaxDistPx) break;
     vec2 p = p0 + dir * d;
     if (p.x < 0.0 || p.y < 0.0 || p.x >= uSize.x || p.y >= uSize.y) break;
-    float lod = max(0.0, log2(step));
+    float lod = max(0.0, log2(step) + uLodBias);
     float h = textureLod(uHeight, p / uSize, lod).r;
     float m = d * uMpp;
     best = max(best, (h - (m * m) / (2.0 * EFFECTIVE_RADIUS) - z0) / m);
@@ -41,7 +42,7 @@ bool blocked(vec2 p0, float z0, vec2 dir, float tanEl) {
     if (d > uMaxDistPx) break;
     vec2 p = p0 + dir * d;
     if (p.x < 0.0 || p.y < 0.0 || p.x >= uSize.x || p.y >= uSize.y) break;
-    float lod = max(0.0, log2(step));
+    float lod = max(0.0, log2(step) + uLodBias);
     float h = textureLod(uHeight, p / uSize, lod).r;
     float m = d * uMpp;
     if (h - (m * m) / (2.0 * EFFECTIVE_RADIUS) > z0 + m * tanEl) return true;
@@ -165,12 +166,15 @@ uniform float uOpacity;
 out vec4 fragColor;
 
 vec3 inferno(float t) {
-  t = clamp(t, 0.0, 1.0);
-  return clamp(vec3(
-    -0.00021 + t * (0.1065 + t * (11.6035 + t * (-41.7038 + t * (44.3541 - t * 14.4247)))),
-    0.00058 + t * (0.0806 + t * (-2.5023 + t * (14.0295 + t * (-19.0287 + t * 8.4218)))),
-    -0.01926 + t * (2.6108 + t * (-16.2311 + t * (47.5316 + t * (-53.3653 + t * 20.4776))))
-  ), 0.0, 1.0);
+  const vec3 c[11] = vec3[11](
+    vec3(0.001, 0.000, 0.014), vec3(0.088, 0.035, 0.199), vec3(0.226, 0.037, 0.376),
+    vec3(0.374, 0.076, 0.432), vec3(0.519, 0.132, 0.420), vec3(0.666, 0.190, 0.371),
+    vec3(0.797, 0.270, 0.292), vec3(0.902, 0.381, 0.188), vec3(0.969, 0.531, 0.070),
+    vec3(0.988, 0.710, 0.106), vec3(0.988, 0.998, 0.645)
+  );
+  float x = clamp(t, 0.0, 1.0) * 10.0;
+  int i = int(floor(x));
+  return mix(c[min(i, 10)], c[min(i + 1, 10)], fract(x));
 }
 
 vec3 slopeRamp(float deg) {
