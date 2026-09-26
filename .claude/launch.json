@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "sunmap",
-      "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "exec python3 -m http.server \"${PORT:-8099}\" --directory ."],
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["scripts/serve.py"],
       "port": 8099,
       "autoPort": true
     }

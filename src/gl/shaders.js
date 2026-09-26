@@ -187,7 +187,13 @@ vec3 slopeRamp(float deg) {
 }
 
 void main() {
-  ivec2 ip = ivec2(gl_FragCoord.xy);
+  // gl_FragCoord counts from the bottom of the drawing buffer, but the canvas
+  // is composited onto the map as an image, whose first row is the top. Row 0
+  // of the heightfield is the northern edge, so without this flip the overlay
+  // is drawn mirrored about the equator of its own bounding box.
+  // gl_FragCoord sits at pixel centres (row + 0.5), so H - y lands exactly on
+  // the mirrored row; H - 1 - y would truncate one row short.
+  ivec2 ip = ivec2(gl_FragCoord.x, uSize.y - gl_FragCoord.y);
   vec4 acc = texelFetch(uAccum, ip, 0);
   float samples = max(acc.a, 1.0);
 
