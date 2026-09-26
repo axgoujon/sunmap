@@ -40,13 +40,14 @@ export async function loadHeightfield({
 
   win.tiles.forEach((tile, i) => {
     const img = images[i];
+    const stride = img.channels || 3;
     const ox = tile.col * TILE_SIZE;
     const oy = tile.row * TILE_SIZE;
     for (let y = 0; y < img.height; y++) {
       const dst = (oy + y) * win.width + ox;
-      const src = y * img.width * 3;
+      const src = y * img.width * stride;
       for (let x = 0; x < img.width; x++) {
-        const s = src + x * 3;
+        const s = src + x * stride;
         const e = decodeTerrarium(img.data[s], img.data[s + 1], img.data[s + 2]);
         data[dst + x] = e <= NO_DATA ? 0 : e;
       }
