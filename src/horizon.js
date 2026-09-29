@@ -1,4 +1,5 @@
 import { sampleBilinear, normalAt } from './terrain.js';
+import { TILE_SIZE } from './tiles.js';
 
 const DEG = Math.PI / 180;
 const EARTH_RADIUS = 6371000;
@@ -9,11 +10,41 @@ const EFFECTIVE_RADIUS = (EARTH_RADIUS * 7) / 6;
 export const curvatureDrop = (distance) => (distance * distance) / (2 * EFFECTIVE_RADIUS);
 
 /**
+ * Maps near-field texel coordinates to far-field ones. Both mosaics are in
+ * Web Mercator pixel space at their own zoom; sampleBilinear indexes texel
+ * centres, hence the half-pixel shifts.
+ */
+export function farMapping(hf, far) {
+  const s = 2 ** (far.z - hf.z);
+  const ox = (hf.originX * TILE_SIZE + 0.5) * s - far.originX * TILE_SIZE - 0.5;
+  const oy = (hf.originY * TILE_SIZE + 0.5) * s - far.originY * TILE_SIZE - 0.5;
+  return (x, y) => [x * s + ox, y * s + oy];
+}
+
+/** Terrain height under a ray: near field while over it, far field beyond. */
+function terrainSampler(hf, far) {
+  const toFar = far ? farMapping(hf, far) : null;
+  return (x, y) => {
+    if (x >= 0 && y >= 0 && x <= hf.width - 1 && y <= hf.height - 1) return sampleBilinear(hf, x, y);
+    if (!toFar) return null;
+    const [fx, fy] = toFar(x, y);
+    if (fx < 0 || fy < 0 || fx > far.width - 1 || fy > far.height - 1) return null;
+    return sampleBilinear(far, fx, fy);
+  };
+}
+
+export function maxHeight(...fields) {
+  let hi = -Infinity;
+  for (const f of fields) if (f) for (const v of f.data) if (v > hi) hi = v;
+  return hi;
+}
+
+/**
  * Horizon elevation angle for each azimuth, seen from one point.
  *
  * Steps grow geometrically: near terrain needs pixel-scale sampling, distant
- * ranges do not, and a linear march to 150 km would cost thousands of samples
- * per ray for no extra accuracy.
+ * ranges do not. Rays leaving the near field continue over `far`, and stop
+ * as soon as even the highest terrain could no longer raise the horizon.
  */
 export function horizonProfile(hf, px, py, {
   azimuths = 180,
@@ -21,9 +52,12 @@ export function horizonProfile(hf, px, py, {
   firstStep = 0.7,
   growth = 1.02,
   observerOffset = 0,
+  far = null,
+  highest = maxHeight(hf, far),
 } = {}) {
   const mpp = hf.metresPerPixel;
   const z0 = sampleBilinear(hf, px, py) + observerOffset;
+  const terrain = terrainSampler(hf, far);
   const profile = new Float32Array(azimuths);
 
   for (let a = 0; a < azimuths; a++) {
@@ -31,18 +65,16 @@ export function horizonProfile(hf, px, py, {
     const dx = Math.sin(bearing * DEG);
     const dy = -Math.cos(bearing * DEG);
 
-    let maxTan = -Infinity;
-    let step = firstStep;
-    for (let d = firstStep; d < maxDistance / mpp; d += step, step *= growth) {
-      const x = px + dx * d;
-      const y = py + dy * d;
-      if (x < 0 || y < 0 || x >= hf.width || y >= hf.height) break;
-      const metres = d * mpp;
-      const dz = sampleBilinear(hf, x, y) - z0 - curvatureDrop(metres);
-      const tan = dz / metres;
-      if (tan > maxTan) maxTan = tan;
+    let best = -Infinity;
+    let step = firstStep * mpp;
+    for (let m = step; m < maxDistance; m += step, step *= growth) {
+      if ((highest - z0) / m <= best) break;
+      const h = terrain(px + (dx * m) / mpp, py + (dy * m) / mpp);
+      if (h === null) break;
+      const tan = (h - curvatureDrop(m) - z0) / m;
+      if (tan > best) best = tan;
     }
-    profile[a] = maxTan === -Infinity ? 0 : Math.atan(maxTan) / DEG;
+    profile[a] = best === -Infinity ? 0 : Math.atan(best) / DEG;
   }
   return profile;
 }

@@ -3,7 +3,7 @@ import { decodeImage } from './decode.js';
 import { Renderer, MODES } from './renderer.js';
 import { sunPosition } from './solar.js';
 import { clearSky, surfaceIrradiance, integrate } from './radiation.js';
-import { horizonProfile, horizonAt, skyViewFactor, directBeamFactor } from './horizon.js';
+import { horizonProfile, horizonAt, skyViewFactor, directBeamFactor, maxHeight } from './horizon.js';
 import { TERRAIN_SOURCE, metersPerPixel } from './tiles.js';
 
 const STEP_MINUTES = 15;
@@ -18,11 +18,24 @@ const MIN_MAP_ZOOM = 11.5;
 const MIN_TERRAIN_ZOOM = 12;
 // "Compute anyway" accepts coarse terrain so the whole view can be covered.
 const FORCED_MIN_TERRAIN_ZOOM = 9;
-// The source is ~30 m (EU-DEM) across most of Europe and 10 m in Austria;
-// z14 (6.6 m/px) only interpolates it, at four times the pixels of z13.
-const MAX_TERRAIN_ZOOM = 13;
-const MAX_FIELD = 2048;
-const MIN_FIELD = 1024;
+// Fetching dominates load time, and bytes per area grow ~3.7x per zoom. The
+// source is ~30 m over most of Europe, which z12 (27 m/px) already captures,
+// so terrain is fetched at z12 and only at z13 (Austria and the US have 10 m
+// data) when the field is small enough to be cheap. The output grid is finer
+// than the terrain: shaders interpolate it, keeping shadow edges sharp.
+const NATIVE_TERRAIN_ZOOM = 12;
+const FINE_TERRAIN_ZOOM = 13;
+const FINE_TERRAIN_MAX = 1024;
+const MAX_OUTPUT_ZOOM = 14;
+const MAX_FIELD = 2048;   // output px
+const MIN_FIELD = 1024;   // output px
+// The far field lets rays that leave the near field keep finding ridges. From
+// a valley floor under 3800 m of relief, a 4.5-degree sun is blocked up to
+// 48 km away; lower suns carry little energy.
+const FAR_RADIUS = 50000;
+const FAR_MAX_ZOOM = 9;   // ~210 m px
+const FAR_MIN_SIZE = 512;
+const FAR_MAX_SIZE = 1024;
 // Shadows are cast from outside the viewport, so the field overhangs it.
 const SHADOW_MARGIN = 1.35;
 
@@ -107,16 +120,34 @@ try {
 function fieldPlan(forced = state.forced) {
   const lat = map.getCenter().lat;
   const view = map.getCanvas();
+  const mpp = (z) => metersPerPixel(lat, z);
   // MapLibre draws 512 px tiles, so a screen pixel at zoom z covers what a
   // 256 px tile pixel covers at z + 1.
-  const spanMetres = metersPerPixel(lat, map.getZoom() + 1) * Math.max(view.clientWidth, view.clientHeight);
-  const wanted = spanMetres * SHADOW_MARGIN;
+  const wanted = mpp(map.getZoom() + 1) * Math.max(view.clientWidth, view.clientHeight) * SHADOW_MARGIN;
+
   const floor = forced ? FORCED_MIN_TERRAIN_ZOOM : MIN_TERRAIN_ZOOM;
-  for (let z = MAX_TERRAIN_ZOOM; z >= floor; z--) {
-    const size = Math.ceil(wanted / metersPerPixel(lat, z));
-    if (size <= MAX_FIELD) return { zoom: z, size: Math.max(MIN_FIELD, size) };
+  let outZoom = floor;
+  for (let z = MAX_OUTPUT_ZOOM; z >= floor; z--) {
+    if (Math.ceil(wanted / mpp(z)) <= MAX_FIELD) { outZoom = z; break; }
   }
-  return { zoom: floor, size: MAX_FIELD };
+  let zoom = Math.min(outZoom, NATIVE_TERRAIN_ZOOM);
+  if (outZoom >= FINE_TERRAIN_ZOOM && Math.ceil(wanted / mpp(FINE_TERRAIN_ZOOM)) <= FINE_TERRAIN_MAX) {
+    zoom = FINE_TERRAIN_ZOOM;
+  }
+  const outScale = 2 ** (outZoom - zoom);
+  const size = Math.max(Math.ceil(MIN_FIELD / outScale), Math.ceil(wanted / mpp(zoom)));
+
+  const farZoom = Math.max(0, Math.min(FAR_MAX_ZOOM, zoom - 3));
+  const farSize = Math.min(FAR_MAX_SIZE, Math.max(FAR_MIN_SIZE, Math.ceil((2 * FAR_RADIUS) / mpp(farZoom))));
+  return { zoom, size, outScale, farZoom, farSize };
+}
+
+// The far field spans ~120 km, so it survives pans of a quarter of that.
+function farStillValid(far, plan, lat, lon) {
+  if (!far || far.z !== plan.farZoom) return false;
+  const p = pixelOf(far, lat, lon);
+  const margin = (0.75 * FAR_RADIUS) / far.metresPerPixel;
+  return p.x > margin && p.y > margin && p.x < far.width - margin && p.y < far.height - margin;
 }
 
 function setOverlayVisible(visible) {
@@ -136,28 +167,51 @@ function showZoomHint() {
   el('zoomHint').hidden = false;
 }
 
+// The overlay must cover the whole screen, not just its centre.
+function coversView(hf) {
+  const b = map.getBounds();
+  return [b.getNorthWest(), b.getNorthEast(), b.getSouthWest(), b.getSouthEast()]
+    .every((p) => contains(hf, p.lat, p.lng));
+}
+
+// Decides what the current view needs: nothing, a finer or coarser output
+// grid on the same terrain, or new terrain.
+function ensureField() {
+  if (!tooFarOut()) state.forced = false;
+  if (tooFarOut() && !state.forced) { showZoomHint(); return; }
+  const plan = fieldPlan();
+  if (!state.hf || plan.zoom !== state.zoom || !coversView(state.hf)) loadForView();
+  else if (plan.outScale !== state.outScale) {
+    useTerrain(state.hf, state.far, plan.outScale);
+    render();
+  }
+}
+
 async function loadForView() {
-  if (!state.renderer || state.busy) return;
+  if (!state.renderer) return;
+  // A move during a load is remembered and re-checked when the load ends,
+  // instead of being dropped.
+  if (state.busy) { state.pending = true; return; }
   if (tooFarOut() && !state.forced) { showZoomHint(); return; }
   el('zoomHint').hidden = true;
   const token = ++state.token;
   const c = map.getCenter();
-  const { zoom, size: fieldSize } = fieldPlan();
+  const plan = fieldPlan();
+  // Each tile costs ~0.5 s of latency whatever its size, and the tile host
+  // serves many requests at once, so one round of requests beats several.
+  const common = { lat: c.lat, lon: c.lng, decode: decodeImage, concurrency: 24 };
+  const reuseFar = farStillValid(state.far, plan, c.lat, c.lng);
 
   state.busy = true;
   say('Loading terrain…', true);
   try {
-    const hf = await loadHeightfield({
-      lat: c.lat, lon: c.lng, zoom, size: fieldSize, decode: decodeImage, concurrency: 12,
-    });
+    const [hf, far] = await Promise.all([
+      loadHeightfield({ ...common, zoom: plan.zoom, size: plan.size }),
+      reuseFar ? state.far : loadHeightfield({ ...common, zoom: plan.farZoom, size: plan.farSize }),
+    ]);
     if (token !== state.token) return;
-    state.hf = hf;
-    state.zoom = zoom;
-    state.renderer.setHeightfield(hf);
-    state.fieldId++;
-    attachOverlay(hf);
-    setOverlayVisible(true);
-    const coarse = zoom < MIN_TERRAIN_ZOOM;
+    useTerrain(hf, far, plan.outScale);
+    const coarse = plan.zoom < MIN_TERRAIN_ZOOM;
     say(`${coarse ? 'Coarse terrain' : 'Terrain'} · ${hf.metresPerPixel.toFixed(0)} m/px · ${(hf.width * hf.metresPerPixel / 1000).toFixed(0)} km`);
     await render();
   } catch (err) {
@@ -165,7 +219,20 @@ async function loadForView() {
     say(`Terrain failed: ${err.message}`);
   } finally {
     state.busy = false;
+    if (state.pending) { state.pending = false; ensureField(); }
   }
+}
+
+function useTerrain(hf, far, outScale) {
+  state.hf = hf;
+  state.far = far;
+  state.zoom = hf.z;
+  state.outScale = outScale;
+  state.highest = maxHeight(hf, far);
+  state.renderer.setTerrain(hf, far, outScale);
+  state.fieldId++;
+  attachOverlay(hf);
+  setOverlayVisible(true);
 }
 
 function attachOverlay(hf) {
@@ -315,7 +382,7 @@ function inspect(lngLat) {
   const p = pixelOf(hf, lngLat.lat, lngLat.lng);
   const elevation = elevationAt(hf, lngLat.lat, lngLat.lng);
   const { slope, aspect } = slopeAspect(hf, p.x, p.y);
-  const profile = horizonProfile(hf, p.x, p.y, { azimuths: 180 });
+  const profile = horizonProfile(hf, p.x, p.y, { azimuths: 180, far: state.far, highest: state.highest });
   const svf = skyViewFactor(profile);
 
   const samples = [];
@@ -694,13 +761,7 @@ else map.once('style.load', () => loadForView());
 let moveTimer;
 map.on('moveend', () => {
   clearTimeout(moveTimer);
-  moveTimer = setTimeout(() => {
-    if (!tooFarOut()) state.forced = false;
-    if (tooFarOut() && !state.forced) { showZoomHint(); return; }
-    const c = map.getCenter();
-    const plan = fieldPlan();
-    if (!state.hf || plan.zoom !== state.zoom || !contains(state.hf, c.lat, c.lng)) loadForView();
-  }, 400);
+  moveTimer = setTimeout(ensureField, 400);
 });
 
 updateSunLine();

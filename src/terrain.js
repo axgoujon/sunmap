@@ -83,7 +83,12 @@ export function sampleBilinear(hf, x, y) {
   return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
 }
 
-export const pixelOf = (hf, lat, lon) => mosaicPixel(hf, lat, lon);
+// sampleBilinear indexes texel centres; the mosaic coordinate of texel i's
+// centre is i + 0.5, so point queries shift by half a pixel.
+export const pixelOf = (hf, lat, lon) => {
+  const p = mosaicPixel(hf, lat, lon);
+  return { x: p.x - 0.5, y: p.y - 0.5 };
+};
 
 export const contains = (hf, lat, lon) => {
   const p = mosaicPixel(hf, lat, lon);
@@ -94,7 +99,7 @@ export const contains = (hf, lat, lon) => {
 // ray marching relies on sampleBilinear's edge clamp instead.
 export const elevationAt = (hf, lat, lon) => {
   if (!contains(hf, lat, lon)) return NaN;
-  const p = mosaicPixel(hf, lat, lon);
+  const p = pixelOf(hf, lat, lon);
   return sampleBilinear(hf, p.x, p.y);
 };
 
