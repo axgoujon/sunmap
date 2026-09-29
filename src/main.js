@@ -7,6 +7,9 @@ import { horizonProfile, horizonAt, skyViewFactor, directBeamFactor } from './ho
 import { TERRAIN_SOURCE, metersPerPixel } from './tiles.js';
 
 const STEP_MINUTES = 15;
+// The point inspector runs on the CPU against a precomputed horizon, so it can
+// afford fine steps; 5 minutes keeps a sunrise over a ridge a vertical edge.
+const INSPECT_MINUTES = 5;
 
 // Below this map zoom the terrain sample would be coarser than the landforms
 // that cast the shadows, producing an overlay that looks unrelated to the
@@ -15,7 +18,9 @@ const MIN_MAP_ZOOM = 11.5;
 const MIN_TERRAIN_ZOOM = 12;
 // "Compute anyway" accepts coarse terrain so the whole view can be covered.
 const FORCED_MIN_TERRAIN_ZOOM = 9;
-const MAX_TERRAIN_ZOOM = 14;
+// The source is ~30 m (EU-DEM) across most of Europe and 10 m in Austria;
+// z14 (6.6 m/px) only interpolates it, at four times the pixels of z13.
+const MAX_TERRAIN_ZOOM = 13;
 const MAX_FIELD = 2048;
 const MIN_FIELD = 1024;
 // Shadows are cast from outside the viewport, so the field overhangs it.
@@ -271,22 +276,22 @@ function inspect(lngLat) {
   const samples = [];
   let litMinutes = 0;
   let firstSun = null, lastSun = null;
-  for (let m = 0; m < 1440; m += STEP_MINUTES) {
+  for (let m = 0; m < 1440; m += INSPECT_MINUTES) {
     const d = new Date(state.date);
     d.setHours(0, m, 0, 0);
-    const s = sunPosition(hf.centre.lat, hf.centre.lon, d);
-    if (s.elevation <= 0) { samples.push({ m, total: 0, lit: false }); continue; }
+    const s = sunPosition(lngLat.lat, lngLat.lng, d);
+    if (s.elevation <= 0) { samples.push({ m, total: 0, direct: 0, sky: 0, lit: false }); continue; }
     const cs = clearSky(s.elevation, elevation, d);
     const beam = directBeamFactor(hf, p.x, p.y, profile, s.elevation, s.azimuth);
     const irr = surfaceIrradiance(cs, beam, svf, slope, 0.6);
     const lit = beam > 0;
-    if (lit) { litMinutes += STEP_MINUTES; firstSun ??= m; lastSun = m; }
-    samples.push({ m, total: irr.total, lit });
+    if (lit) { litMinutes += INSPECT_MINUTES; firstSun ??= m; lastSun = m; }
+    samples.push({ m, total: irr.total, direct: irr.direct, sky: irr.diffuse + irr.reflected, lit });
   }
 
-  const energy = integrate(samples.map((s) => s.total), STEP_MINUTES);
-  const now = samples[Math.round(state.minutes / STEP_MINUTES) % samples.length];
-  const soFar = integrate(samples.filter((s) => s.m <= state.minutes).map((s) => s.total), STEP_MINUTES);
+  const energy = integrate(samples.map((s) => s.total), INSPECT_MINUTES);
+  const now = samples[Math.round(state.minutes / INSPECT_MINUTES) % samples.length];
+  const soFar = integrate(samples.filter((s) => s.m <= state.minutes).map((s) => s.total), INSPECT_MINUTES);
 
   const hhmm = (m) => m == null ? '—' : `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
   const stat = (label, value, cls = '') => `<div><dt>${label}</dt><dd class="${cls}">${value}</dd></div>`;
@@ -296,13 +301,14 @@ function inspect(lngLat) {
     stat('Energy so far', `${(soFar / 1000).toFixed(1)} kWh/m²`),
     stat('Day total', `${(energy / 1000).toFixed(1)} kWh/m²`),
     stat('Direct sun', `${(litMinutes / 60).toFixed(1)} h`),
-    stat('Sun on slope', firstSun == null ? 'None' : `${hhmm(firstSun)}–${hhmm(lastSun + STEP_MINUTES)}`),
+    stat('Sun on slope', firstSun == null ? 'None' : `${hhmm(firstSun)}–${hhmm(lastSun + INSPECT_MINUTES)}`),
     stat('Sky view', `${(svf * 100).toFixed(0)}%`),
   ].join('');
 
-  drawCurve(samples);
-  drawHorizon(profile);
+  // Charts size themselves from layout, so the card must be visible first.
   el('inspector').hidden = false;
+  drawCurve(samples);
+  drawHorizon(profile, lngLat.lat, lngLat.lng);
   marker.setLngLat(lngLat).addTo(map);
 }
 
@@ -334,10 +340,14 @@ function drawCurve(samples) {
   }
   ctx.beginPath(); ctx.moveTo(0, bottom); ctx.lineTo(w, bottom); ctx.stroke();
 
-  ctx.beginPath(); ctx.moveTo(0, bottom);
-  for (const s of samples) ctx.lineTo(x(s.m), y(s.total));
-  ctx.lineTo(w, bottom); ctx.closePath();
-  ctx.fillStyle = 'rgba(232,145,45,.14)'; ctx.fill();
+  const area = (lower, upper, fill) => {
+    ctx.beginPath();
+    samples.forEach((s, i) => (i ? ctx.lineTo(x(s.m), y(upper(s))) : ctx.moveTo(x(s.m), y(upper(s)))));
+    for (let i = samples.length - 1; i >= 0; i--) ctx.lineTo(x(samples[i].m), y(lower(samples[i])));
+    ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  };
+  area(() => 0, (s) => s.sky, '#dfe2e7');
+  area((s) => s.sky, (s) => s.total, 'rgba(232,145,45,.28)');
 
   ctx.strokeStyle = SUN; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.beginPath();
   samples.forEach((s, i) => (i ? ctx.lineTo(x(s.m), y(s.total)) : ctx.moveTo(x(s.m), y(s.total))));
@@ -351,25 +361,116 @@ function drawCurve(samples) {
   ctx.textAlign = 'left'; ctx.fillText(`${Math.round(max)}`, 2, top + 8);
 }
 
-function drawHorizon(profile) {
-  const { ctx, w, h } = surface(el('horizonPlot'));
-  const top = 4, bottom = h - 14;
-  const max = Math.max(30, ...profile);
-  const y = (v) => bottom - (Math.max(0, v) / max) * (bottom - top);
-
-  ctx.beginPath(); ctx.moveTo(0, bottom);
-  profile.forEach((v, i) => ctx.lineTo((i / profile.length) * w, y(v)));
-  ctx.lineTo(w, y(profile[0])); ctx.lineTo(w, bottom); ctx.closePath();
-  ctx.fillStyle = '#e4e6ea'; ctx.fill();
-
-  const sun = sunPosition(state.hf.centre.lat, state.hf.centre.lon, instantOf());
-  if (sun.elevation > 0) {
-    const lit = sun.elevation > horizonAt(profile, sun.azimuth);
-    ctx.fillStyle = lit ? SUN : MUTED;
-    ctx.beginPath(); ctx.arc((sun.azimuth / 360) * w, Math.max(top + 3, y(sun.elevation)), 3.5, 0, 7); ctx.fill();
+function sunPath(lat, lon, day) {
+  const points = [];
+  for (let m = 0; m <= 1440; m += 5) {
+    const d = new Date(day);
+    d.setHours(0, m, 0, 0);
+    const { azimuth, elevation } = sunPosition(lat, lon, d);
+    points.push({ m, az: azimuth, el: elevation });
   }
+  return points;
+}
+
+// Draws a path as runs that share a style, breaking below the horizon and
+// where the azimuth wraps through north (the southern-hemisphere case).
+// Neighbouring runs share their boundary point so the line stays continuous.
+function strokeRuns(ctx, points, x, y, keyOf, applyStyle) {
+  let run = [], key = null;
+  const flush = () => {
+    if (run.length > 1) {
+      ctx.beginPath();
+      run.forEach((p, i) => (i ? ctx.lineTo(x(p.az), y(p.el)) : ctx.moveTo(x(p.az), y(p.el))));
+      applyStyle(key, ctx);
+      ctx.stroke();
+    }
+    run = [];
+  };
+  points.forEach((p, i) => {
+    const k = p.el > 0 ? keyOf(p) : null;
+    if (i && Math.abs(p.az - points[i - 1].az) > 180) flush();
+    else if (k !== key && run.length) { run.push(p); flush(); }
+    key = k;
+    if (k !== null) run.push(p);
+  });
+  flush();
+}
+
+function drawHorizon(profile, lat, lon) {
+  const { ctx, w, h } = surface(el('horizonPlot'));
+  const top = 16, bottom = h - 14, left = 18;
+  const year = state.date.getFullYear();
+  const solstices = [
+    { label: '21 Jun', path: sunPath(lat, lon, new Date(year, 5, 21)) },
+    { label: '21 Dec', path: sunPath(lat, lon, new Date(year, 11, 21)) },
+  ];
+  const today = sunPath(lat, lon, state.date);
+
+  const peak = Math.max(30, ...profile, ...solstices.flatMap((s) => s.path.map((p) => p.el)));
+  const max = Math.ceil(peak / 10) * 10;
+  const x = (az) => left + (az / 360) * (w - left);
+  const y = (el) => bottom - (Math.max(0, el) / max) * (bottom - top);
+
+  ctx.strokeStyle = GRID; ctx.lineWidth = 1; ctx.fillStyle = MUTED; ctx.textAlign = 'left';
+  for (let g = 30; g < max; g += 30) {
+    ctx.beginPath(); ctx.moveTo(left, y(g)); ctx.lineTo(w, y(g)); ctx.stroke();
+    ctx.fillText(`${g}°`, 0, y(g) + 3);
+  }
+  ctx.beginPath(); ctx.moveTo(left, bottom); ctx.lineTo(w, bottom); ctx.stroke();
+
+  for (const s of solstices) {
+    strokeRuns(ctx, s.path, x, y, () => 'solstice', (_, c) => {
+      c.strokeStyle = '#c3c7cd'; c.lineWidth = 1; c.setLineDash([3, 3]);
+    });
+  }
+  ctx.setLineDash([]);
+
+  const lit = (p) => p.el > horizonAt(profile, p.az);
+  strokeRuns(ctx, today, x, y, (p) => (lit(p) ? 'lit' : 'blocked'), (k, c) => {
+    c.strokeStyle = k === 'lit' ? SUN : '#9aa0a8';
+    c.lineWidth = k === 'lit' ? 2 : 1.25;
+  });
+
+  // Terrain drawn over the paths, slightly translucent: the sun visibly passes
+  // behind the ridge, and the hidden stretch still shows through faintly.
+  ctx.beginPath(); ctx.moveTo(x(0), bottom);
+  profile.forEach((v, i) => ctx.lineTo(x((i / profile.length) * 360), y(v)));
+  ctx.lineTo(x(360), y(profile[0])); ctx.lineTo(x(360), bottom); ctx.closePath();
+  ctx.fillStyle = 'rgba(214,218,224,.88)'; ctx.fill();
+  ctx.strokeStyle = '#b4b9c0'; ctx.lineWidth = 1; ctx.stroke();
+
   ctx.fillStyle = MUTED; ctx.textAlign = 'center';
-  ['N', 'E', 'S', 'W'].forEach((d, i) => ctx.fillText(d, Math.max(5, (i / 4) * w), h - 2));
+  // Today's path always lies between the two solstices, so labelling the
+  // higher one above its arc and the lower one below keeps the labels clear.
+  const peaks = solstices
+    .map((s) => ({ ...s, peak: s.path.reduce((a, b) => (b.el > a.el ? b : a)) }))
+    .sort((a, b) => b.peak.el - a.peak.el);
+  peaks.forEach(({ label, peak }, i) => {
+    if (peak.el <= horizonAt(profile, peak.az)) return; // hidden behind terrain
+    const lx = Math.min(w - 20, Math.max(left + 20, x(peak.az)));
+    ctx.fillText(label, lx, i === 0 ? y(peak.el) - 5 : y(peak.el) + 12);
+  });
+
+  for (const p of today) {
+    if (p.m % 60 || p.m >= 1440 || p.el <= 0 || !lit(p)) continue;
+    ctx.fillStyle = SUN;
+    ctx.beginPath(); ctx.arc(x(p.az), y(p.el), 1.8, 0, 7); ctx.fill();
+    if ((p.m / 60) % 3 === 0) { ctx.fillStyle = INK; ctx.fillText(String(p.m / 60), x(p.az), y(p.el) + 11); }
+  }
+
+  const sun = sunPosition(lat, lon, instantOf());
+  if (sun.elevation > 0) {
+    const visible = sun.elevation > horizonAt(profile, sun.azimuth);
+    ctx.beginPath(); ctx.arc(x(sun.azimuth), y(sun.elevation), 4, 0, 7);
+    ctx.fillStyle = visible ? SUN : '#fff'; ctx.fill();
+    ctx.strokeStyle = visible ? '#fff' : '#8b9098'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+
+  ctx.fillStyle = MUTED;
+  ['N', 'E', 'S', 'W', 'N'].forEach((d, i) => {
+    ctx.textAlign = i === 0 ? 'left' : i === 4 ? 'right' : 'center';
+    ctx.fillText(d, x(i * 90), h - 2);
+  });
 }
 
 const marker = new maplibregl.Marker({ color: '#16181d', scale: 0.65 });

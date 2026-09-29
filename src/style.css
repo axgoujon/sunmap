@@ -81,7 +81,7 @@ input[type=range] { accent-color: var(--ink); height: 16px; margin: 0; }
 
 figure { margin: 0 0 10px; }
 figure canvas { width: 100%; height: 88px; display: block; }
-figure + figure canvas { height: 64px; }
+figure + figure canvas { height: 132px; }
 figcaption { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
 /* time bar */
@@ -117,3 +117,7 @@ figcaption { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .clock span { display: none; }
   .clock { min-width: 44px; }
 }
+
+.key { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 3px 0 4px; vertical-align: -1px; }
+.key.sun { background: rgba(232, 145, 45, .5); }
+.key.sky { background: #dfe2e7; }
