@@ -28,6 +28,10 @@
     <div id="legendBar" class="legend-bar"></div>
     <div class="legend-labels"><span id="legendMin"></span><span id="legendMax"></span></div>
   </div>
+  <label class="check-row">
+    <input type="checkbox" id="sky">
+    <span>Include sky light <em>(diffuse and reflected)</em></span>
+  </label>
   <label class="slider-row">
     <span>Opacity</span>
     <input type="range" id="opacity" min="0" max="100" value="75">
@@ -53,7 +57,7 @@
   <dl id="pointStats" class="stats"></dl>
   <figure>
     <canvas id="curve"></canvas>
-    <figcaption>Irradiance through the day, W/m² · <span class="key sun"></span>direct sun <span class="key sky"></span>sky light</figcaption>
+    <figcaption>Irradiance through the day, W/m² · <span class="key sun"></span>direct sun<span id="skyKey"> <span class="key sky"></span>sky light</span></figcaption>
   </figure>
   <figure>
     <canvas id="horizonPlot"></canvas>

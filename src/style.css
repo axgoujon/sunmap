@@ -126,3 +126,7 @@ figcaption { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .timebar .icon { width: 30px; height: 30px; color: var(--ink); flex: none; }
 .timebar .icon:disabled, .timebar input:disabled { opacity: .35; cursor: default; }
 .timebar .icon:disabled:hover { background: none; }
+
+.check-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 10px; cursor: pointer; }
+.check-row input { accent-color: var(--ink); margin: 0; }
+.check-row em { font-style: normal; color: var(--muted); }

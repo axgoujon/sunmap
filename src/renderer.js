@@ -167,7 +167,7 @@ export class Renderer {
     return sun;
   }
 
-  colorize({ mode = MODES.binary, scale = 1000, stepHours = 0.25, opacity = 0.75 }) {
+  colorize({ mode = MODES.binary, scale = 1000, stepHours = 0.25, opacity = 0.75, sky = false }) {
     const gl = this.gl;
     const { width, height, metresPerPixel } = this.field;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -183,6 +183,7 @@ export class Renderer {
     u.f('uStepHours', stepHours);
     u.f('uMpp', metresPerPixel);
     u.f('uOpacity', opacity);
+    u.f('uSky', sky ? 1 : 0);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     this.draw();

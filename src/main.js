@@ -43,6 +43,9 @@ const state = {
   forced: false,
   // Energy and sun-hours maps: the whole day, or only up to the selected time.
   untilTime: false,
+  // Sky light is the roughest part of the model (isotropic sky, fixed
+  // albedo), so energy and power show direct sun alone unless asked.
+  sky: false,
   fieldId: 0,
   playing: false,
 };
@@ -196,8 +199,9 @@ function scaleFor(mode) {
     const s = sunPosition(lat, lon, d);
     if (s.elevation <= 0) continue;
     const cs = clearSky(s.elevation, alt, d);
-    peak = Math.max(peak, cs.dni + cs.dhi);
-    total += cs.dni + cs.dhi;
+    const reference = cs.dni + (state.sky ? cs.dhi : 0);
+    peak = Math.max(peak, reference);
+    total += reference;
     hours += 1;
   }
   if (mode === 'power') return Math.max(peak, 200);
@@ -233,7 +237,7 @@ async function render() {
   const token = ++renderToken;
   const mode = state.mode;
   const scale = scaleFor(mode);
-  const common = { mode: MODES[mode], scale, stepHours: STEP_MINUTES / 60, opacity: state.opacity };
+  const common = { mode: MODES[mode], scale, stepHours: STEP_MINUTES / 60, opacity: state.opacity, sky: state.sky };
 
   if (mode === 'slope') {
     r.colorize(common);
@@ -330,15 +334,16 @@ function inspect(lngLat) {
     samples.push({ m, total: irr.total, direct: irr.direct, sky: irr.diffuse + irr.reflected, lit });
   }
 
-  const energy = integrate(samples.map((s) => s.total), INSPECT_MINUTES);
+  for (const s of samples) s.shown = s.direct + (state.sky ? s.sky : 0);
+  const energy = integrate(samples.map((s) => s.shown), INSPECT_MINUTES);
   const now = samples[Math.round(state.minutes / INSPECT_MINUTES) % samples.length];
-  const soFar = integrate(samples.filter((s) => s.m <= state.minutes).map((s) => s.total), INSPECT_MINUTES);
+  const soFar = integrate(samples.filter((s) => s.m <= state.minutes).map((s) => s.shown), INSPECT_MINUTES);
 
   const hhmm = (m) => m == null ? '—' : `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
   const stat = (label, value, cls = '') => `<div><dt>${label}</dt><dd class="${cls}">${value}</dd></div>`;
   el('pointTitle').textContent = `${elevation.toFixed(0)} m · ${slope.toFixed(0)}° ${compass(aspect)}`;
   el('pointStats').innerHTML = [
-    stat('Now', `${now.total.toFixed(0)} W/m²`, now.lit ? 'lit' : ''),
+    stat('Now', `${now.shown.toFixed(0)} W/m²`, now.lit ? 'lit' : ''),
     stat('Energy so far', `${(soFar / 1000).toFixed(1)} kWh/m²`),
     stat('Day total', `${(energy / 1000).toFixed(1)} kWh/m²`),
     stat('Direct sun', `${(litMinutes / 60).toFixed(1)} h`),
@@ -371,7 +376,7 @@ const INK = '#16181d', MUTED = '#a3a8b0', GRID = '#eceef1', SUN = '#e8912d';
 function drawCurve(samples) {
   const { ctx, w, h } = surface(el('curve'));
   const top = 4, bottom = h - 14;
-  const max = Math.max(200, ...samples.map((s) => s.total));
+  const max = Math.max(200, ...samples.map((s) => s.shown));
   const x = (m) => (m / 1440) * w;
   const y = (v) => bottom - (v / max) * (bottom - top);
 
@@ -387,11 +392,13 @@ function drawCurve(samples) {
     for (let i = samples.length - 1; i >= 0; i--) ctx.lineTo(x(samples[i].m), y(lower(samples[i])));
     ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
   };
-  area(() => 0, (s) => s.sky, '#dfe2e7');
-  area((s) => s.sky, (s) => s.total, 'rgba(232,145,45,.28)');
+  const base = (s) => (state.sky ? s.sky : 0);
+  if (state.sky) area(() => 0, base, '#dfe2e7');
+  area(base, (s) => s.shown, 'rgba(232,145,45,.28)');
+  el('skyKey').hidden = !state.sky;
 
   ctx.strokeStyle = SUN; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.beginPath();
-  samples.forEach((s, i) => (i ? ctx.lineTo(x(s.m), y(s.total)) : ctx.moveTo(x(s.m), y(s.total))));
+  samples.forEach((s, i) => (i ? ctx.lineTo(x(s.m), y(s.shown)) : ctx.moveTo(x(s.m), y(s.shown))));
   ctx.stroke();
 
   ctx.strokeStyle = INK; ctx.lineWidth = 1; ctx.beginPath();
@@ -644,6 +651,15 @@ async function play() {
 
 el('play').innerHTML = PLAY_ICON;
 el('play').addEventListener('click', () => (state.playing ? stopPlaying() : play()));
+
+try { state.sky = localStorage.getItem('sunmap.sky') === 'on'; } catch {}
+el('sky').checked = state.sky;
+el('sky').addEventListener('change', (e) => {
+  state.sky = e.target.checked;
+  try { localStorage.setItem('sunmap.sky', state.sky ? 'on' : 'off'); } catch {}
+  render();
+  if (state.point) inspect(state.point);
+});
 
 el('opacity').addEventListener('input', (e) => {
   state.opacity = e.target.value / 100;

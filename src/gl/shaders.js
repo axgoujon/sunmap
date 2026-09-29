@@ -188,6 +188,7 @@ uniform float uScale;
 uniform float uStepHours;
 uniform float uMpp;
 uniform float uOpacity;
+uniform float uSky;      // 1 adds sky light (diffuse + reflected) to direct sun, 0 leaves it out
 out vec4 fragColor;
 
 vec3 inferno(float t) {
@@ -229,11 +230,11 @@ void main() {
     return;
   }
   if (uMode == 1) {
-    fragColor = vec4(inferno((acc.r + acc.g) / uScale), uOpacity);
+    fragColor = vec4(inferno((acc.r + uSky * acc.g) / uScale), uOpacity);
     return;
   }
   if (uMode == 2) {
-    float wh = (acc.r + acc.g) * uStepHours;
+    float wh = (acc.r + uSky * acc.g) * uStepHours;
     fragColor = vec4(inferno(wh / uScale), uOpacity);
     return;
   }
