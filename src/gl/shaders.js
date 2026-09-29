@@ -9,10 +9,34 @@ uniform float uMaxDistPx;
 uniform float uFirstStep;
 uniform float uGrowth;
 uniform float uLodBias;
+uniform int uMaxLevel;
 
 float heightAt(ivec2 p) {
   return texelFetch(uHeight, clamp(p, ivec2(0), ivec2(uSize) - 1), 0).r;
 }
+
+#ifdef MANUAL_BILINEAR
+// Devices without OES_texture_float_linear cannot filter float textures, so
+// the four neighbours are fetched and blended here. Level selection mirrors
+// the hardware's MIPMAP_NEAREST rounding so both paths give the same answer.
+float sampleHeight(vec2 p, float lod) {
+  int level = clamp(int(floor(lod + 0.5)), 0, uMaxLevel);
+  ivec2 size = textureSize(uHeight, level);
+  vec2 q = (p / uSize) * vec2(size) - 0.5;
+  ivec2 i = ivec2(floor(q));
+  vec2 f = q - floor(q);
+  ivec2 hi = size - 1;
+  float a = texelFetch(uHeight, clamp(i, ivec2(0), hi), level).r;
+  float b = texelFetch(uHeight, clamp(i + ivec2(1, 0), ivec2(0), hi), level).r;
+  float c = texelFetch(uHeight, clamp(i + ivec2(0, 1), ivec2(0), hi), level).r;
+  float d = texelFetch(uHeight, clamp(i + ivec2(1, 1), ivec2(0), hi), level).r;
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+#else
+float sampleHeight(vec2 p, float lod) {
+  return textureLod(uHeight, p / uSize, lod).r;
+}
+#endif
 
 // Steps grow geometrically, and each sample is taken from the mip level whose
 // footprint matches the step. Because the pyramid stores maxima, a long
@@ -26,7 +50,7 @@ float horizonTangent(vec2 p0, float z0, vec2 dir) {
     vec2 p = p0 + dir * d;
     if (p.x < 0.0 || p.y < 0.0 || p.x >= uSize.x || p.y >= uSize.y) break;
     float lod = max(0.0, log2(step) + uLodBias);
-    float h = textureLod(uHeight, p / uSize, lod).r;
+    float h = sampleHeight(p, lod);
     float m = d * uMpp;
     best = max(best, (h - (m * m) / (2.0 * EFFECTIVE_RADIUS) - z0) / m);
     d += step;
@@ -43,7 +67,7 @@ bool blocked(vec2 p0, float z0, vec2 dir, float tanEl) {
     vec2 p = p0 + dir * d;
     if (p.x < 0.0 || p.y < 0.0 || p.x >= uSize.x || p.y >= uSize.y) break;
     float lod = max(0.0, log2(step) + uLodBias);
-    float h = textureLod(uHeight, p / uSize, lod).r;
+    float h = sampleHeight(p, lod);
     float m = d * uMpp;
     if (h - (m * m) / (2.0 * EFFECTIVE_RADIUS) > z0 + m * tanEl) return true;
     d += step;

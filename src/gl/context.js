@@ -9,7 +9,6 @@ export function createContext(canvas) {
   if (!gl) throw new Error('WebGL2 is required and is not available in this browser.');
   const float = gl.getExtension('EXT_color_buffer_float');
   if (!float) throw new Error('WebGL2 float render targets (EXT_color_buffer_float) are required.');
-  gl.getExtension('OES_texture_float_linear');
   return gl;
 }
 
@@ -85,8 +84,10 @@ export function createRgbaTexture(gl, width, height) {
   gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, width, height);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  // Only ever read with texelFetch. LINEAR would make the texture incomplete
+  // on GPUs without float filtering, and incomplete textures read as zero.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   return tex;
 }
 

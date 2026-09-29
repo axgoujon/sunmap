@@ -11,13 +11,20 @@ export const MODES = { binary: 0, power: 1, energy: 2, sunHours: 3, slope: 4 };
 const MARCH = { firstStep: 0.7, growth: 1.02, lodBias: -1.0, maxDistanceMetres: 150000 };
 
 export class Renderer {
-  constructor(canvas) {
+  constructor(canvas, { manualFiltering = false } = {}) {
     this.canvas = canvas;
     const gl = (this.gl = createContext(canvas));
+    // Many phone GPUs cannot filter float textures. There the heightfield must
+    // use nearest filtering (otherwise it is incomplete and every lookup reads
+    // zero) and the shaders blend neighbours themselves.
+    this.hardwareFiltering = !manualFiltering && !!gl.getExtension('OES_texture_float_linear');
+    const define = (src) => this.hardwareFiltering
+      ? src
+      : src.replace('#version 300 es', '#version 300 es\n#define MANUAL_BILINEAR');
     this.programs = {
       reduce: program(gl, FULLSCREEN_VS, MAX_REDUCE_FS),
-      skyView: program(gl, FULLSCREEN_VS, SKYVIEW_FS),
-      irradiance: program(gl, FULLSCREEN_VS, IRRADIANCE_FS),
+      skyView: program(gl, FULLSCREEN_VS, define(SKYVIEW_FS)),
+      irradiance: program(gl, FULLSCREEN_VS, define(IRRADIANCE_FS)),
       colorize: program(gl, FULLSCREEN_VS, COLORIZE_FS),
     };
     this.uniforms = Object.fromEntries(
@@ -47,7 +54,7 @@ export class Renderer {
     this.release();
 
     const levels = mipLevels(width, height);
-    this.heightTex = createFloatTexture(gl, width, height, levels, true);
+    this.heightTex = createFloatTexture(gl, width, height, levels, this.hardwareFiltering);
     gl.bindTexture(gl.TEXTURE_2D, this.heightTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.FLOAT, hf.data);
 
@@ -93,6 +100,7 @@ export class Renderer {
     u.f('uFirstStep', this.march.firstStep);
     u.f('uGrowth', this.march.growth);
     u.f('uLodBias', this.march.lodBias);
+    u.i('uMaxLevel', this.field.levels - 1);
   }
 
   buildSkyView(azimuths = 16) {

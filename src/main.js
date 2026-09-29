@@ -87,7 +87,9 @@ map.addControl(new maplibregl.ScaleControl(), 'bottom-right');
 
 const canvas = el('overlay');
 try {
-  state.renderer = new Renderer(canvas);
+  state.renderer = new Renderer(canvas, {
+    manualFiltering: new URLSearchParams(location.search).has('manualfilter'),
+  });
 } catch (err) {
   say(err.message);
   document.querySelector('.segmented').style.opacity = 0.4;
