@@ -11,8 +11,10 @@ const STEP_MINUTES = 15;
 // Below this map zoom the terrain sample would be coarser than the landforms
 // that cast the shadows, producing an overlay that looks unrelated to the
 // topography. Refusing to compute is more honest than showing mush.
-const MIN_MAP_ZOOM = 11;
+const MIN_MAP_ZOOM = 11.5;
 const MIN_TERRAIN_ZOOM = 12;
+// "Compute anyway" accepts coarse terrain so the whole view can be covered.
+const FORCED_MIN_TERRAIN_ZOOM = 9;
 const MAX_TERRAIN_ZOOM = 14;
 const MAX_FIELD = 2048;
 const MIN_FIELD = 1024;
@@ -33,13 +35,15 @@ const state = {
   busy: false,
   point: null,
   token: 0,
+  forced: false,
 };
 
+let sayTimer;
 function say(text, busy = false) {
   status.textContent = text;
-  status.classList.toggle('busy', busy);
   status.classList.add('show');
-  if (!busy) setTimeout(() => status.classList.remove('show'), 2200);
+  clearTimeout(sayTimer);
+  if (!busy) sayTimer = setTimeout(() => status.classList.remove('show'), 2400);
 }
 
 const instantOf = () => {
@@ -55,6 +59,10 @@ const map = new maplibregl.Map({
   zoom: 11.5,
   hash: true,
   maxPitch: 0,
+  attributionControl: {
+    compact: true,
+    customAttribution: TERRAIN_SOURCE.attribution,
+  },
 });
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
 map.addControl(new maplibregl.ScaleControl(), 'bottom-right');
@@ -64,7 +72,7 @@ try {
   state.renderer = new Renderer(canvas);
 } catch (err) {
   say(err.message);
-  document.querySelector('.modes').style.opacity = 0.4;
+  document.querySelector('.segmented').style.opacity = 0.4;
 }
 
 // ---------------------------------------------------------------- terrain
@@ -73,15 +81,19 @@ try {
  * Pick the finest terrain zoom whose field still covers the viewport plus a
  * shadow margin without exceeding the texture budget.
  */
-function fieldPlan() {
+function fieldPlan(forced = state.forced) {
   const lat = map.getCenter().lat;
-  const spanMetres = metersPerPixel(lat, map.getZoom()) * map.getCanvas().clientWidth;
+  const view = map.getCanvas();
+  // MapLibre draws 512 px tiles, so a screen pixel at zoom z covers what a
+  // 256 px tile pixel covers at z + 1.
+  const spanMetres = metersPerPixel(lat, map.getZoom() + 1) * Math.max(view.clientWidth, view.clientHeight);
   const wanted = spanMetres * SHADOW_MARGIN;
-  for (let z = MAX_TERRAIN_ZOOM; z >= MIN_TERRAIN_ZOOM; z--) {
+  const floor = forced ? FORCED_MIN_TERRAIN_ZOOM : MIN_TERRAIN_ZOOM;
+  for (let z = MAX_TERRAIN_ZOOM; z >= floor; z--) {
     const size = Math.ceil(wanted / metersPerPixel(lat, z));
     if (size <= MAX_FIELD) return { zoom: z, size: Math.max(MIN_FIELD, size) };
   }
-  return { zoom: MIN_TERRAIN_ZOOM, size: MAX_FIELD };
+  return { zoom: floor, size: MAX_FIELD };
 }
 
 function setOverlayVisible(visible) {
@@ -96,14 +108,14 @@ function tooFarOut() {
 
 function showZoomHint() {
   state.hf = null;
+  state.token++;
   setOverlayVisible(false);
   el('zoomHint').hidden = false;
-  say('Zoom in to compute sun exposure');
 }
 
 async function loadForView() {
   if (!state.renderer || state.busy) return;
-  if (tooFarOut()) { showZoomHint(); return; }
+  if (tooFarOut() && !state.forced) { showZoomHint(); return; }
   el('zoomHint').hidden = true;
   const token = ++state.token;
   const c = map.getCenter();
@@ -121,7 +133,8 @@ async function loadForView() {
     state.renderer.setHeightfield(hf);
     attachOverlay(hf);
     setOverlayVisible(true);
-    say(`Terrain ready — ${hf.metresPerPixel.toFixed(0)} m/px, ${(hf.width * hf.metresPerPixel / 1000).toFixed(0)} km across`);
+    const coarse = zoom < MIN_TERRAIN_ZOOM;
+    say(`${coarse ? 'Coarse terrain' : 'Terrain'} · ${hf.metresPerPixel.toFixed(0)} m/px · ${(hf.width * hf.metresPerPixel / 1000).toFixed(0)} km`);
     await render();
   } catch (err) {
     console.error(err);
@@ -212,7 +225,7 @@ async function render() {
   // Whole-day accumulation, spread across frames so the UI keeps breathing.
   const steps = dayTimesteps();
   r.clearAccumulator();
-  say(`Integrating ${steps.length} timesteps…`, true);
+  say('Integrating the day…', true);
   for (let i = 0; i < steps.length; i++) {
     if (token !== renderToken) return;
     r.addTimestep(steps[i]);
@@ -223,24 +236,24 @@ async function render() {
     }
   }
   updateLegend(mode, scale);
-  say(`${steps.length} timesteps integrated`);
+  status.classList.remove('show');
 }
 
 function updateLegend(mode, scale) {
-  const legend = el('legend');
-  const unit = { power: 'W/m²', energy: 'Wh/m²', sunHours: 'h', slope: '°', binary: '' }[mode];
+  const bar = el('legendBar');
+  const unit = { power: 'W/m²', energy: 'Wh/m²', sunHours: 'h' }[mode];
+  let min = '0', max = `${Math.round(scale).toLocaleString()} ${unit}`;
   if (mode === 'binary') {
-    legend.style.background = 'linear-gradient(90deg,#1a1f26,#f0e0b0)';
-    legend.innerHTML = '<span>shade</span><span>sun</span>';
-    return;
+    bar.style.background = 'linear-gradient(90deg,#3a3d44,#3a3d44 50%,#f3dfae 50%,#f3dfae)';
+    [min, max] = ['Shade', 'Sun'];
+  } else if (mode === 'slope') {
+    bar.style.background = 'linear-gradient(90deg,#59a666 0 33%,#f2d94d 33% 50%,#f28c33 50% 67%,#d93333 67% 83%,#a62698 83% 92%,#40268c 92%)';
+    [min, max] = ['< 25°', '> 45°'];
+  } else {
+    bar.style.background = 'linear-gradient(90deg,#000004,#420a68,#932667,#dd513a,#fca50a,#fcffa4)';
   }
-  if (mode === 'slope') {
-    legend.style.background = 'linear-gradient(90deg,#59a666 0 33%,#f2d94d 33% 50%,#f28c33 50% 67%,#d93333 67% 83%,#a62698 83% 92%,#40268c 92%)';
-    legend.innerHTML = '<span>&lt;25°</span><span>50°+</span>';
-    return;
-  }
-  legend.style.background = 'linear-gradient(90deg,#000004,#420a68,#932667,#dd513a,#fca50a,#fcffa4)';
-  legend.innerHTML = `<span>0</span><span>${Math.round(scale).toLocaleString()} ${unit}</span>`;
+  el('legendMin').textContent = min;
+  el('legendMax').textContent = max;
 }
 
 // ------------------------------------------------------------- inspector
@@ -276,16 +289,15 @@ function inspect(lngLat) {
   const soFar = integrate(samples.filter((s) => s.m <= state.minutes).map((s) => s.total), STEP_MINUTES);
 
   const hhmm = (m) => m == null ? '—' : `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-  const stat = (label, value, cls = '') => `<div class="stat ${cls}"><b>${value}</b><i>${label}</i></div>`;
+  const stat = (label, value, cls = '') => `<div><dt>${label}</dt><dd class="${cls}">${value}</dd></div>`;
+  el('pointTitle').textContent = `${elevation.toFixed(0)} m · ${slope.toFixed(0)}° ${compass(aspect)}`;
   el('pointStats').innerHTML = [
-    stat('elevation', `${elevation.toFixed(0)} m`),
-    stat('slope / aspect', `${slope.toFixed(0)}° ${compass(aspect)}`),
-    stat('now', `${now.total.toFixed(0)} W/m²`, now.lit ? 'lit' : ''),
-    stat('energy so far', `${(soFar / 1000).toFixed(1)} kWh/m²`),
-    stat('day total', `${(energy / 1000).toFixed(1)} kWh/m²`),
-    stat('direct sun', `${(litMinutes / 60).toFixed(1)} h`),
-    stat('sun on slope', `${hhmm(firstSun)}–${hhmm(lastSun)}`),
-    stat('sky view', `${(svf * 100).toFixed(0)}%`),
+    stat('Now', `${now.total.toFixed(0)} W/m²`, now.lit ? 'lit' : ''),
+    stat('Energy so far', `${(soFar / 1000).toFixed(1)} kWh/m²`),
+    stat('Day total', `${(energy / 1000).toFixed(1)} kWh/m²`),
+    stat('Direct sun', `${(litMinutes / 60).toFixed(1)} h`),
+    stat('Sun on slope', firstSun == null ? 'None' : `${hhmm(firstSun)}–${hhmm(lastSun + STEP_MINUTES)}`),
+    stat('Sky view', `${(svf * 100).toFixed(0)}%`),
   ].join('');
 
   drawCurve(samples);
@@ -296,76 +308,81 @@ function inspect(lngLat) {
 
 const compass = (deg) => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(deg / 45) % 8];
 
-function drawCurve(samples) {
-  const c = el('curve');
+function surface(c) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
   const ctx = c.getContext('2d');
-  const w = c.width, h = c.height, pad = 4;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
+  ctx.font = '10px system-ui, sans-serif';
+  return { ctx, w, h };
+}
+
+const INK = '#16181d', MUTED = '#a3a8b0', GRID = '#eceef1', SUN = '#e8912d';
+
+function drawCurve(samples) {
+  const { ctx, w, h } = surface(el('curve'));
+  const top = 4, bottom = h - 14;
   const max = Math.max(200, ...samples.map((s) => s.total));
-
-  for (const frac of [0.25, 0.5, 0.75]) {
-    ctx.strokeStyle = '#1f252d'; ctx.beginPath();
-    ctx.moveTo(0, h - pad - frac * (h - 2 * pad)); ctx.lineTo(w, h - pad - frac * (h - 2 * pad)); ctx.stroke();
-  }
-
   const x = (m) => (m / 1440) * w;
-  const y = (v) => h - pad - (v / max) * (h - 2 * pad);
+  const y = (v) => bottom - (v / max) * (bottom - top);
 
-  ctx.beginPath();
-  ctx.moveTo(0, h);
+  ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+  for (const hr of [6, 12, 18]) {
+    ctx.beginPath(); ctx.moveTo(x(hr * 60), top); ctx.lineTo(x(hr * 60), bottom); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(0, bottom); ctx.lineTo(w, bottom); ctx.stroke();
+
+  ctx.beginPath(); ctx.moveTo(0, bottom);
   for (const s of samples) ctx.lineTo(x(s.m), y(s.total));
-  ctx.lineTo(w, h); ctx.closePath();
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, 'rgba(240,169,59,.55)');
-  grad.addColorStop(1, 'rgba(240,169,59,.03)');
-  ctx.fillStyle = grad; ctx.fill();
+  ctx.lineTo(w, bottom); ctx.closePath();
+  ctx.fillStyle = 'rgba(232,145,45,.14)'; ctx.fill();
 
-  ctx.strokeStyle = '#f0a93b'; ctx.lineWidth = 1.5; ctx.beginPath();
+  ctx.strokeStyle = SUN; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.beginPath();
   samples.forEach((s, i) => (i ? ctx.lineTo(x(s.m), y(s.total)) : ctx.moveTo(x(s.m), y(s.total))));
   ctx.stroke();
 
-  ctx.strokeStyle = '#e6edf3'; ctx.lineWidth = 1; ctx.beginPath();
-  ctx.moveTo(x(state.minutes), 0); ctx.lineTo(x(state.minutes), h); ctx.stroke();
+  ctx.strokeStyle = INK; ctx.lineWidth = 1; ctx.beginPath();
+  ctx.moveTo(x(state.minutes), top); ctx.lineTo(x(state.minutes), bottom); ctx.stroke();
 
-  ctx.fillStyle = '#5c6570'; ctx.font = '9px ui-monospace, monospace';
-  for (const hr of [6, 12, 18]) ctx.fillText(`${hr}:00`, x(hr * 60) + 2, h - 2);
+  ctx.fillStyle = MUTED; ctx.textAlign = 'center';
+  for (const hr of [6, 12, 18]) ctx.fillText(`${hr}:00`, x(hr * 60), h - 2);
+  ctx.textAlign = 'left'; ctx.fillText(`${Math.round(max)}`, 2, top + 8);
 }
 
 function drawHorizon(profile) {
-  const c = el('horizonPlot');
-  const ctx = c.getContext('2d');
-  const w = c.width, h = c.height, pad = 3;
-  ctx.clearRect(0, 0, w, h);
+  const { ctx, w, h } = surface(el('horizonPlot'));
+  const top = 4, bottom = h - 14;
   const max = Math.max(30, ...profile);
-  ctx.beginPath();
-  ctx.moveTo(0, h);
-  profile.forEach((v, i) => ctx.lineTo((i / profile.length) * w, h - pad - (Math.max(0, v) / max) * (h - 2 * pad)));
-  ctx.lineTo(w, h); ctx.closePath();
-  ctx.fillStyle = 'rgba(139,148,158,.28)'; ctx.fill();
-  ctx.strokeStyle = '#8b949e'; ctx.lineWidth = 1; ctx.stroke();
+  const y = (v) => bottom - (Math.max(0, v) / max) * (bottom - top);
+
+  ctx.beginPath(); ctx.moveTo(0, bottom);
+  profile.forEach((v, i) => ctx.lineTo((i / profile.length) * w, y(v)));
+  ctx.lineTo(w, y(profile[0])); ctx.lineTo(w, bottom); ctx.closePath();
+  ctx.fillStyle = '#e4e6ea'; ctx.fill();
 
   const sun = sunPosition(state.hf.centre.lat, state.hf.centre.lon, instantOf());
   if (sun.elevation > 0) {
-    const sx = (sun.azimuth / 360) * w;
-    const sy = h - pad - (sun.elevation / max) * (h - 2 * pad);
-    ctx.fillStyle = sun.elevation > horizonAt(profile, sun.azimuth) ? '#f0a93b' : '#4a5058';
-    ctx.beginPath(); ctx.arc(sx, Math.max(4, sy), 3.5, 0, 7); ctx.fill();
+    const lit = sun.elevation > horizonAt(profile, sun.azimuth);
+    ctx.fillStyle = lit ? SUN : MUTED;
+    ctx.beginPath(); ctx.arc((sun.azimuth / 360) * w, Math.max(top + 3, y(sun.elevation)), 3.5, 0, 7); ctx.fill();
   }
-  ctx.fillStyle = '#5c6570'; ctx.font = '9px ui-monospace, monospace';
-  ['N', 'E', 'S', 'W'].forEach((d, i) => ctx.fillText(d, (i / 4) * w + 2, h - 2));
+  ctx.fillStyle = MUTED; ctx.textAlign = 'center';
+  ['N', 'E', 'S', 'W'].forEach((d, i) => ctx.fillText(d, Math.max(5, (i / 4) * w), h - 2));
 }
 
-const marker = new maplibregl.Marker({ color: '#f0a93b', scale: 0.7 });
+const marker = new maplibregl.Marker({ color: '#16181d', scale: 0.65 });
 
 // ---------------------------------------------------------------- events
 
 function updateSunLine() {
   const c = state.hf ? state.hf.centre : { lat: map.getCenter().lat, lon: map.getCenter().lng };
   const s = sunPosition(c.lat, c.lon, instantOf());
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  el('sunInfo').innerHTML = s.elevation > 0
-    ? `sun <b>${s.elevation.toFixed(1)}°</b> above horizon, bearing <b>${s.azimuth.toFixed(0)}°</b> · ${tz}`
-    : `sun is <b>below the horizon</b> · ${tz}`;
+  el('sunInfo').textContent = s.elevation > 0
+    ? `Sun ${s.elevation.toFixed(0)}° · ${compass(s.azimuth)}`
+    : 'Sun down';
+  el('timeLabel').title = Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
 // The date input speaks UTC through valueAsDate, but every calculation here
@@ -387,13 +404,22 @@ el('date').addEventListener('change', (e) => {
 });
 
 const timeInput = el('time');
-timeInput.value = state.minutes;
 const setTime = (v) => {
   state.minutes = +v;
+  timeInput.value = state.minutes;
   el('timeLabel').textContent = `${String(Math.floor(v / 60)).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
   updateSunLine();
 };
 setTime(state.minutes);
+
+el('now').addEventListener('click', () => {
+  const now = new Date();
+  state.date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  el('date').value = toInputValue(state.date);
+  setTime(now.getHours() * 60 + now.getMinutes());
+  render();
+  if (state.point) inspect(state.point);
+});
 
 let timeTimer;
 timeInput.addEventListener('input', (e) => {
@@ -405,10 +431,12 @@ timeInput.addEventListener('input', (e) => {
   }, 60);
 });
 
-document.querySelectorAll('.modes button').forEach((b) =>
+document.querySelectorAll('.segmented button').forEach((b) =>
   b.addEventListener('click', () => {
-    document.querySelectorAll('.modes button').forEach((x) => x.classList.remove('active'));
-    b.classList.add('active');
+    document.querySelectorAll('.segmented button').forEach((x) => {
+      x.classList.toggle('active', x === b);
+      x.setAttribute('aria-checked', String(x === b));
+    });
     state.mode = b.dataset.mode;
     render();
   })
@@ -425,9 +453,12 @@ el('closeInspector').addEventListener('click', () => {
   marker.remove();
 });
 
-el('panelToggle').addEventListener('click', () => el('panel').classList.toggle('hidden'));
-
 el('zoomIn').addEventListener('click', () => map.easeTo({ zoom: Math.max(MIN_MAP_ZOOM + 0.5, map.getZoom() + 2) }));
+
+el('computeAnyway').addEventListener('click', () => {
+  state.forced = true;
+  loadForView();
+});
 
 map.on('error', (e) => {
   console.error('map error', e && e.error);
@@ -435,16 +466,18 @@ map.on('error', (e) => {
 });
 
 map.on('click', (e) => inspect(e.lngLat));
-map.on('load', () => {
-  el('attribution').innerHTML = `${TERRAIN_SOURCE.attribution}<br>Basemap © OpenFreeMap, © OpenStreetMap contributors`;
-  loadForView();
-});
+// Terrain only needs the style (to add the overlay source), not the first
+// complete basemap render that 'load' waits for; starting here fetches both
+// in parallel instead of in sequence.
+if (map.isStyleLoaded()) loadForView();
+else map.once('style.load', () => loadForView());
 
 let moveTimer;
 map.on('moveend', () => {
   clearTimeout(moveTimer);
   moveTimer = setTimeout(() => {
-    if (tooFarOut()) { showZoomHint(); return; }
+    if (!tooFarOut()) state.forced = false;
+    if (tooFarOut() && !state.forced) { showZoomHint(); return; }
     const c = map.getCenter();
     const plan = fieldPlan();
     if (!state.hf || plan.zoom !== state.zoom || !contains(state.hf, c.lat, c.lng)) loadForView();
