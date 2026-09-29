@@ -41,6 +41,19 @@ const state = {
   point: null,
   token: 0,
   forced: false,
+  // Energy and sun-hours maps: the whole day, or only up to the selected time.
+  untilTime: false,
+  fieldId: 0,
+  playing: false,
+};
+
+// Yields to the event loop between GPU batches. A timeout rather than
+// requestAnimationFrame so the work also finishes in a background tab.
+const nextTick = () => new Promise((res) => setTimeout(res, 0));
+const at = (minutes) => {
+  const d = new Date(state.date);
+  d.setHours(0, minutes, 0, 0);
+  return d;
 };
 
 let sayTimer;
@@ -136,6 +149,7 @@ async function loadForView() {
     state.hf = hf;
     state.zoom = zoom;
     state.renderer.setHeightfield(hf);
+    state.fieldId++;
     attachOverlay(hf);
     setOverlayVisible(true);
     const coarse = zoom < MIN_TERRAIN_ZOOM;
@@ -190,16 +204,24 @@ function scaleFor(mode) {
   return 1000;
 }
 
-function dayTimesteps() {
+function daylightSteps() {
   const { lat, lon } = state.hf.centre;
   const out = [];
   for (let m = 0; m < 1440; m += STEP_MINUTES) {
-    const d = new Date(state.date);
-    d.setHours(0, m, 0, 0);
-    if (sunPosition(lat, lon, d).elevation > 0) out.push(d);
+    if (sunPosition(lat, lon, at(m)).elevation > 0) out.push(m);
   }
   return out;
 }
+
+const cumulative = (mode) => mode === 'energy' || mode === 'sunHours';
+
+/**
+ * The energy and sun-hours maps are a running sum over the day's timesteps,
+ * always a prefix of them. Moving the cut-off only adds or subtracts the steps
+ * in between, so scrubbing and playback cost the distance moved rather than
+ * a whole-day recompute.
+ */
+const sum = { key: null, count: 0 };
 
 let renderToken = 0;
 
@@ -218,7 +240,8 @@ async function render() {
     return;
   }
 
-  if (mode === 'binary' || mode === 'power') {
+  if (!cumulative(mode)) {
+    sum.key = null;
     r.clearAccumulator();
     r.addTimestep(instantOf());
     r.colorize({ ...common, stepHours: 1 });
@@ -227,21 +250,37 @@ async function render() {
     return;
   }
 
-  // Whole-day accumulation, spread across frames so the UI keeps breathing.
-  const steps = dayTimesteps();
-  r.clearAccumulator();
-  say('Integrating the day…', true);
-  for (let i = 0; i < steps.length; i++) {
+  const steps = daylightSteps();
+  const key = `${state.fieldId}|${toInputValue(state.date)}`;
+  if (sum.key !== key) {
+    r.clearAccumulator();
+    sum.key = key;
+    sum.count = 0;
+  }
+  const target = state.untilTime ? steps.filter((m) => m <= state.minutes).length : steps.length;
+  const long = Math.abs(target - sum.count) > 8;
+  if (long) say('Integrating the day…', true);
+
+  let done = 0;
+  while (sum.count !== target) {
     if (token !== renderToken) return;
-    r.addTimestep(steps[i]);
-    if (i % 8 === 7 || i === steps.length - 1) {
+    if (sum.count < target) {
+      r.addTimestep(at(steps[sum.count]), { weight: 1 });
+      sum.count++;
+    } else {
+      sum.count--;
+      r.addTimestep(at(steps[sum.count]), { weight: -1 });
+    }
+    if (++done % 8 === 0) {
       r.colorize(common);
       repaint();
-      await new Promise((res) => requestAnimationFrame(res));
+      await nextTick();
     }
   }
+  r.colorize(common);
+  repaint();
   updateLegend(mode, scale);
-  status.classList.remove('show');
+  if (long) status.classList.remove('show');
 }
 
 function updateLegend(mode, scale) {
@@ -508,7 +547,9 @@ const timeInput = el('time');
 const setTime = (v) => {
   state.minutes = +v;
   timeInput.value = state.minutes;
-  el('timeLabel').textContent = `${String(Math.floor(v / 60)).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
+  const label = `${String(Math.floor(v / 60)).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
+  el('timeLabel').textContent = label;
+  el('scopeTime').textContent = label;
   updateSunLine();
 };
 setTime(state.minutes);
@@ -524,24 +565,83 @@ el('now').addEventListener('click', () => {
 
 let timeTimer;
 timeInput.addEventListener('input', (e) => {
+  stopPlaying();
   setTime(e.target.value);
   clearTimeout(timeTimer);
   timeTimer = setTimeout(() => {
-    if (state.mode === 'binary' || state.mode === 'power') render();
+    render();
     if (state.point) inspect(state.point);
-  }, 60);
+  }, 40);
 });
 
-document.querySelectorAll('.segmented button').forEach((b) =>
+function selectIn(group, button) {
+  group.querySelectorAll('button').forEach((x) => {
+    x.classList.toggle('active', x === button);
+    x.setAttribute('aria-checked', String(x === button));
+  });
+}
+
+// The slider only means something when the map depends on the time of day.
+function syncTimeControls() {
+  const timeless = state.mode === 'slope' || (cumulative(state.mode) && !state.untilTime);
+  el('scope').hidden = !cumulative(state.mode);
+  timeInput.disabled = timeless;
+  el('play').disabled = timeless;
+  if (timeless) stopPlaying();
+}
+
+el('layers').querySelectorAll('button').forEach((b) =>
   b.addEventListener('click', () => {
-    document.querySelectorAll('.segmented button').forEach((x) => {
-      x.classList.toggle('active', x === b);
-      x.setAttribute('aria-checked', String(x === b));
-    });
+    selectIn(el('layers'), b);
     state.mode = b.dataset.mode;
+    syncTimeControls();
     render();
   })
 );
+
+el('scope').querySelectorAll('button').forEach((b) =>
+  b.addEventListener('click', () => {
+    selectIn(el('scope'), b);
+    state.untilTime = b.dataset.scope === 'until';
+    syncTimeControls();
+    render();
+  })
+);
+
+// ------------------------------------------------------------------ play
+
+const PLAY_ICON = '<svg width="14" height="14" viewBox="0 0 14 14"><path d="M4 2.5v9l7.5-4.5z" fill="currentColor"/></svg>';
+const PAUSE_ICON = '<svg width="14" height="14" viewBox="0 0 14 14"><path d="M3.5 2.5h2.5v9H3.5zM8 2.5h2.5v9H8z" fill="currentColor"/></svg>';
+const PLAY_STEP_MINUTES = 5;
+
+function stopPlaying() {
+  state.playing = false;
+  el('play').innerHTML = PLAY_ICON;
+  el('play').setAttribute('aria-label', 'Play through the day');
+}
+
+async function play() {
+  if (!state.hf) return;
+  const steps = daylightSteps();
+  if (!steps.length) return;
+  const sunrise = steps[0] - STEP_MINUTES;
+  const sunset = steps[steps.length - 1] + STEP_MINUTES;
+  if (state.minutes < sunrise || state.minutes >= sunset) setTime(sunrise);
+
+  state.playing = true;
+  el('play').innerHTML = PAUSE_ICON;
+  el('play').setAttribute('aria-label', 'Pause');
+  while (state.playing && state.minutes < sunset) {
+    setTime(Math.min(sunset, state.minutes + PLAY_STEP_MINUTES));
+    await render();
+    if (state.point) inspect(state.point);
+    await nextTick();
+  }
+  stopPlaying();
+}
+
+el('play').innerHTML = PLAY_ICON;
+el('play').addEventListener('click', () => (state.playing ? stopPlaying() : play()));
 
 el('opacity').addEventListener('input', (e) => {
   state.opacity = e.target.value / 100;
@@ -587,4 +687,6 @@ map.on('moveend', () => {
 
 updateSunLine();
 
-window.__sunmap = { map, state, loadForView, render, inspect };
+syncTimeControls();
+
+window.__sunmap = { map, state, loadForView, render, inspect, play, stopPlaying, sum };

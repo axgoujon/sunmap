@@ -121,3 +121,8 @@ figcaption { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .key { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 3px 0 4px; vertical-align: -1px; }
 .key.sun { background: rgba(232, 145, 45, .5); }
 .key.sky { background: #dfe2e7; }
+
+.segmented.two { grid-template-columns: 1fr 1fr; margin-top: 8px; }
+.timebar .icon { width: 30px; height: 30px; color: var(--ink); flex: none; }
+.timebar .icon:disabled, .timebar input:disabled { opacity: .35; cursor: default; }
+.timebar .icon:disabled:hover { background: none; }

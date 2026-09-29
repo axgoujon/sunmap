@@ -13,12 +13,16 @@
 
 <div class="card controls">
   <h1>Sunmap</h1>
-  <div class="segmented" role="radiogroup" aria-label="Layer">
+  <div class="segmented" id="layers" role="radiogroup" aria-label="Layer">
     <button data-mode="binary" class="active" role="radio" aria-checked="true">Shade</button>
     <button data-mode="power" role="radio">Power</button>
     <button data-mode="energy" role="radio">Energy</button>
     <button data-mode="sunHours" role="radio">Hours</button>
     <button data-mode="slope" role="radio">Slope</button>
+  </div>
+  <div class="segmented two" id="scope" role="radiogroup" aria-label="Period" hidden>
+    <button data-scope="day" class="active" role="radio" aria-checked="true">Whole day</button>
+    <button data-scope="until" role="radio">Until <span id="scopeTime">11:00</span></button>
   </div>
   <div class="legend">
     <div id="legendBar" class="legend-bar"></div>
@@ -28,7 +32,7 @@
     <span>Opacity</span>
     <input type="range" id="opacity" min="0" max="100" value="75">
   </label>
-  <p class="fine">Clear-sky model, not an avalanche forecast. Check your local bulletin.</p>
+  <p class="fine">Clear sky model, terrain only (ignores clouds, vegetation and buildings).</p>
 </div>
 
 <div class="card zoom-hint" id="zoomHint" hidden>
@@ -60,6 +64,7 @@
 <div class="card timebar">
   <input type="date" id="date" aria-label="Date">
   <button id="now">Now</button>
+  <button id="play" class="icon" aria-label="Play through the day"></button>
   <input type="range" id="time" min="0" max="1439" step="5" value="660" aria-label="Time of day">
   <div class="clock">
     <output id="timeLabel">11:00</output>

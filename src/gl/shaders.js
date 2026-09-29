@@ -111,6 +111,7 @@ uniform vec3 uDhi;
 uniform vec3 uGhi;
 uniform vec2 uAltRange;
 uniform float uAlbedo;
+uniform float uWeight;   // +1 adds this instant to the running sum, -1 removes it
 out vec4 fragColor;
 
 // The clear-sky model varies smoothly with altitude, so evaluating it at the
@@ -150,7 +151,7 @@ void main() {
 
   float diffuse = dhi * svf * tilt;
   float reflected = ghi * uAlbedo * max(0.0, 1.0 - svf * tilt);
-  fragColor = texelFetch(uPrevious, ip, 0) + vec4(direct, diffuse + reflected, lit, 1.0);
+  fragColor = texelFetch(uPrevious, ip, 0) + uWeight * vec4(direct, diffuse + reflected, lit, 1.0);
 }`;
 
 export const COLORIZE_FS = `#version 300 es

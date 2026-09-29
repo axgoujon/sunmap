@@ -122,7 +122,7 @@ export class Renderer {
   }
 
   /** Accumulate one instant into the running total. */
-  addTimestep(date, { albedo = 0.6 } = {}) {
+  addTimestep(date, { albedo = 0.6, weight = 1 } = {}) {
     const gl = this.gl;
     const { width, height, centre, elevationRange } = this.field;
     const sun = sunPosition(centre.lat, centre.lon, date);
@@ -144,6 +144,7 @@ export class Renderer {
     u.f('uSunAz', sun.azimuth);
     u.f('uSunEl', sun.elevation);
     u.f('uAlbedo', albedo);
+    u.f('uWeight', weight);
     u.v3('uDni', low.dni, high.dni, 0);
     u.v3('uDhi', low.dhi, high.dhi, 0);
     u.v3('uGhi', low.ghi, high.ghi, 0);
