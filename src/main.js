@@ -4,7 +4,7 @@ import { Renderer, MODES } from './renderer.js';
 import { sunPosition } from './solar.js';
 import { clearSky, surfaceIrradiance, integrate } from './radiation.js';
 import { horizonProfile, horizonAt, skyViewFactor, directBeamFactor, maxHeight } from './horizon.js';
-import { TERRAIN_SOURCE, metersPerPixel } from './tiles.js';
+import { TERRAIN_SOURCE, metersPerPixel, windowTiles } from './tiles.js';
 
 const STEP_MINUTES = 15;
 // The point inspector runs on the CPU against a precomputed horizon, so it can
@@ -102,10 +102,25 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-ri
 map.addControl(new maplibregl.ScaleControl(), 'bottom-right');
 
 const canvas = el('overlay');
+const rendererOptions = { manualFiltering: new URLSearchParams(location.search).has('manualfilter') };
+
+// Mobile browsers drop the GPU context when the app goes to the background or
+// memory runs short. Without this the overlay stays blank until a reload.
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();   // asks the browser to restore the context
+  state.contextLost = true;
+  say('Graphics were reset, restoring…', true);
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  state.renderer = new Renderer(canvas, rendererOptions);
+  state.contextLost = false;
+  sum.key = null;
+  if (state.hf) { useTerrain(state.hf, state.far, state.outScale); render(); }
+  status.classList.remove('show');
+});
+
 try {
-  state.renderer = new Renderer(canvas, {
-    manualFiltering: new URLSearchParams(location.search).has('manualfilter'),
-  });
+  state.renderer = new Renderer(canvas, rendererOptions);
 } catch (err) {
   say(err.message);
   document.querySelector('.segmented').style.opacity = 0.4;
@@ -161,10 +176,12 @@ function tooFarOut() {
 }
 
 function showZoomHint() {
+  state.loadCtrl?.abort(new DOMException('zoomed out', 'AbortError'));
   state.hf = null;
   state.token++;
   setOverlayVisible(false);
   el('zoomHint').hidden = false;
+  status.classList.remove('show');
 }
 
 // The overlay must cover the whole screen, not just its centre.
@@ -189,36 +206,55 @@ function ensureField() {
 
 async function loadForView() {
   if (!state.renderer) return;
-  // A move during a load is remembered and re-checked when the load ends,
-  // instead of being dropped.
-  if (state.busy) { state.pending = true; return; }
+  if (state.busy) {
+    // Moving on cancels the load in flight; the new view loads as soon as
+    // it unwinds, rather than queueing behind a request that may never end.
+    state.pending = true;
+    state.loadCtrl?.abort(new DOMException('superseded', 'AbortError'));
+    return;
+  }
   if (tooFarOut() && !state.forced) { showZoomHint(); return; }
   el('zoomHint').hidden = true;
   const token = ++state.token;
+  const ctrl = (state.loadCtrl = new AbortController());
   const c = map.getCenter();
   const plan = fieldPlan();
+  const reuseFar = farStillValid(state.far, plan, c.lat, c.lng);
   // Each tile costs ~0.5 s of latency whatever its size, and the tile host
   // serves many requests at once, so one round of requests beats several.
-  const common = { lat: c.lat, lon: c.lng, decode: decodeImage, concurrency: 24 };
-  const reuseFar = farStillValid(state.far, plan, c.lat, c.lng);
+  const common = { lat: c.lat, lon: c.lng, decode: decodeImage, concurrency: 24, signal: ctrl.signal };
+
+  const total = windowTiles(c.lat, c.lng, plan.zoom, plan.size).tiles.length
+    + (reuseFar ? 0 : windowTiles(c.lat, c.lng, plan.farZoom, plan.farSize).tiles.length);
+  let loaded = 0;
+  const onTile = () => { if (!ctrl.signal.aborted) say(`Loading terrain ${++loaded}/${total}`, true); };
 
   state.busy = true;
-  say('Loading terrain…', true);
+  say(`Loading terrain 0/${total}`, true);
   try {
     const [hf, far] = await Promise.all([
-      loadHeightfield({ ...common, zoom: plan.zoom, size: plan.size }),
-      reuseFar ? state.far : loadHeightfield({ ...common, zoom: plan.farZoom, size: plan.farSize }),
+      loadHeightfield({ ...common, zoom: plan.zoom, size: plan.size, onTile }),
+      reuseFar ? state.far : loadHeightfield({ ...common, zoom: plan.farZoom, size: plan.farSize, onTile }),
     ]);
     if (token !== state.token) return;
     useTerrain(hf, far, plan.outScale);
+    state.failures = 0;
     const coarse = plan.zoom < MIN_TERRAIN_ZOOM;
     say(`${coarse ? 'Coarse terrain' : 'Terrain'} · ${hf.metresPerPixel.toFixed(0)} m/px · ${(hf.width * hf.metresPerPixel / 1000).toFixed(0)} km`);
     await render();
   } catch (err) {
+    if (ctrl.signal.aborted) return;   // superseded by a newer view; it reports for itself
     console.error(err);
-    say(`Terrain failed: ${err.message}`);
+    state.failures = (state.failures || 0) + 1;
+    if (state.failures === 1) {
+      say('Terrain did not load, retrying…', true);
+      setTimeout(ensureField, 1500);
+    } else {
+      say('Could not load terrain. Check the connection, then move the map to retry.');
+    }
   } finally {
     state.busy = false;
+    if (state.loadCtrl === ctrl) state.loadCtrl = null;
     if (state.pending) { state.pending = false; ensureField(); }
   }
 }
@@ -300,7 +336,7 @@ let renderToken = 0;
 
 async function render() {
   const r = state.renderer;
-  if (!r || !state.hf) return;
+  if (!r || !state.hf || state.contextLost) return;
   const token = ++renderToken;
   const mode = state.mode;
   const scale = scaleFor(mode);
@@ -760,6 +796,7 @@ else map.once('style.load', () => loadForView());
 
 let moveTimer;
 map.on('moveend', () => {
+  state.failures = 0;   // every deliberate move earns a fresh automatic retry
   clearTimeout(moveTimer);
   moveTimer = setTimeout(ensureField, 400);
 });

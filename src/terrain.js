@@ -5,20 +5,52 @@ import {
 
 const NO_DATA = -32768;
 
-async function fetchTile(tile, source, decode, signal) {
-  const res = await fetch(tileUrl(tile.z, tile.x, tile.y, source), { signal });
-  if (!res.ok) throw new Error(`tile ${tile.z}/${tile.x}/${tile.y}: HTTP ${res.status}`);
-  return decode(await res.arrayBuffer());
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+/**
+ * A request can stall indefinitely on a flaky mobile connection, and fetch
+ * has no timeout of its own: without one, a single silent tile froze the
+ * whole load. Each attempt is bounded and retried; the caller's signal still
+ * cancels everything at once.
+ */
+async function fetchTile(tile, source, decode, signal, { timeout = 8000, retries = 2 } = {}) {
+  const url = tileUrl(tile.z, tile.x, tile.y, source);
+  for (let attempt = 0; ; attempt++) {
+    const ctrl = new AbortController();
+    const cancel = () => ctrl.abort(signal.reason);
+    signal?.addEventListener('abort', cancel, { once: true });
+    const timer = setTimeout(() => ctrl.abort(new Error(`tile ${tile.z}/${tile.x}/${tile.y} timed out`)), timeout);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`tile ${tile.z}/${tile.x}/${tile.y}: HTTP ${res.status}`);
+      const buffer = await res.arrayBuffer();
+      clearTimeout(timer);
+      return await decode(buffer);
+    } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err;
+      if (attempt >= retries) throw err;
+      await sleep(400 * 2 ** attempt);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+    }
+  }
 }
 
 async function pooled(items, limit, worker) {
   const results = new Array(items.length);
   let next = 0;
+  let failed = false;
   await Promise.all(
     Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
+      while (next < items.length && !failed) {
         const i = next++;
-        results[i] = await worker(items[i], i);
+        try {
+          results[i] = await worker(items[i], i);
+        } catch (err) {
+          failed = true;   // stop handing out work for a load that is already lost
+          throw err;
+        }
       }
     })
   );
@@ -31,12 +63,16 @@ async function pooled(items, limit, worker) {
  */
 export async function loadHeightfield({
   lat, lon, zoom, size = 2048, source = TERRAIN_SOURCE,
-  decode, concurrency = 8, signal,
+  decode, concurrency = 8, signal, onTile,
 }) {
   const win = windowTiles(lat, lon, zoom, size);
   const data = new Float32Array(win.width * win.height);
 
-  const images = await pooled(win.tiles, concurrency, (t) => fetchTile(t, source, decode, signal));
+  const images = await pooled(win.tiles, concurrency, async (t) => {
+    const img = await fetchTile(t, source, decode, signal);
+    onTile?.();
+    return img;
+  });
 
   win.tiles.forEach((tile, i) => {
     const img = images[i];
