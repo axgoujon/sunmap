@@ -720,7 +720,7 @@ function sunUpWindow() {
 // One plain sentence for what the map shows, so the role of the time slider
 // never has to be guessed.
 function describe() {
-  const t = clock(state.minutes);
+  const t = 'the time set on the slider';
   const light = state.sky ? 'direct sun plus sky light' : 'direct sun only';
   switch (state.mode) {
     case 'binary': return `Where direct sun reaches the ground at ${t}.`;
@@ -739,7 +739,7 @@ const timeless = () => state.mode === 'slope' || (cumulative(state.mode) && !sta
 
 function updateDescriptions() {
   el('describe').textContent = describe();
-  const period = cumulative(state.mode) ? (state.untilTime ? ` · to ${clock(state.minutes)}` : ' · whole day') : '';
+  const period = cumulative(state.mode) ? (state.untilTime ? ' · since sunrise' : ' · whole day') : '';
   el('controlsSummary').textContent = MODE_NAMES[state.mode] + period;
   if (timeless()) {
     if (state.mode === 'slope') {
@@ -759,7 +759,6 @@ const setTime = (v) => {
   timeInput.value = state.minutes;
   el('timeLabel').textContent = clock(state.minutes);
   updateSunLine();
-  updateDescriptions();
 };
 setTime(state.minutes);
 
