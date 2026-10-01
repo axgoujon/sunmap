@@ -547,6 +547,41 @@ function strokeRuns(ctx, points, x, y, keyOf, applyStyle) {
   flush();
 }
 
+// Sun elevation by bearing over one day, one value per degree. Bearing is
+// single-valued over a day, so the solstice paths bound every position the
+// sun takes during the year.
+const yearBandCache = new Map();
+function elevationByBearing(lat, lon, day) {
+  const bins = new Float32Array(361).fill(NaN);
+  for (let m = 0; m <= 1440; m++) {
+    const d = new Date(day);
+    d.setHours(0, m, 0, 0);
+    const { azimuth, elevation } = sunPosition(lat, lon, d);
+    const b = Math.round(azimuth) % 361;
+    if (!(bins[b] >= elevation)) bins[b] = elevation;
+  }
+  for (let b = 0; b <= 360; b++) {
+    if (!Number.isNaN(bins[b])) continue;
+    let l = b - 1; while (l >= 0 && Number.isNaN(bins[l])) l--;
+    let r = b + 1; while (r <= 360 && Number.isNaN(bins[r])) r++;
+    if (l >= 0 && r <= 360) bins[b] = bins[l] + ((bins[r] - bins[l]) * (b - l)) / (r - l);
+  }
+  return bins;
+}
+
+function yearBand(lat, lon, year) {
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)},${year}`;
+  if (!yearBandCache.has(key)) {
+    const june = elevationByBearing(lat, lon, new Date(year, 5, 21));
+    const dec = elevationByBearing(lat, lon, new Date(year, 11, 21));
+    const hi = new Float32Array(361), lo = new Float32Array(361);
+    for (let b = 0; b <= 360; b++) { hi[b] = Math.max(june[b], dec[b]); lo[b] = Math.min(june[b], dec[b]); }
+    if (yearBandCache.size > 50) yearBandCache.clear();
+    yearBandCache.set(key, { hi, lo });
+  }
+  return yearBandCache.get(key);
+}
+
 function drawHorizon(profile, lat, lon) {
   const { ctx, w, h } = surface(el('horizonPlot'));
   const top = 16, bottom = h - 14, left = 18;
@@ -569,9 +604,23 @@ function drawHorizon(profile, lat, lon) {
   }
   ctx.beginPath(); ctx.moveTo(left, bottom); ctx.lineTo(w, bottom); ctx.stroke();
 
+  // The sun's range over the year: everything between the two solstice paths.
+  const band = yearBand(lat, lon, year);
+  ctx.fillStyle = 'rgba(232,145,45,.16)';
+  for (let b = 0; b <= 360; ) {
+    if (!(band.hi[b] > 0)) { b++; continue; }
+    const start = b;
+    while (b <= 360 && band.hi[b] > 0) b++;
+    ctx.beginPath();
+    for (let i = start; i < b; i++) ctx.lineTo(x(i), y(band.hi[i]));
+    for (let i = b - 1; i >= start; i--) ctx.lineTo(x(i), y(Math.max(0, band.lo[i])));
+    ctx.closePath();
+    ctx.fill();
+  }
+
   for (const s of solstices) {
     strokeRuns(ctx, s.path, x, y, () => 'solstice', (_, c) => {
-      c.strokeStyle = '#c3c7cd'; c.lineWidth = 1; c.setLineDash([3, 3]);
+      c.strokeStyle = 'rgba(214,128,36,.55)'; c.lineWidth = 1; c.setLineDash([3, 3]);
     });
   }
   ctx.setLineDash([]);
@@ -651,18 +700,66 @@ el('date').addEventListener('change', (e) => {
   if (!e.target.value) return;
   state.date = fromInputValue(e.target.value);
   updateSunLine();
+  updateDescriptions();
   render();
   if (state.point) inspect(state.point);
 });
+
+const MODE_NAMES = { binary: 'Shade', power: 'Power', energy: 'Energy', sunHours: 'Sun hours', slope: 'Slope' };
+const clock = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+
+function sunUpWindow() {
+  const c = state.hf ? state.hf.centre : { lat: map.getCenter().lat, lon: map.getCenter().lng };
+  let rise = null, set = null;
+  for (let m = 0; m < 1440; m++) {
+    if (sunPosition(c.lat, c.lon, at(m)).elevation > 0) { rise ??= m; set = m; }
+  }
+  return { rise, set };
+}
+
+// One plain sentence for what the map shows, so the role of the time slider
+// never has to be guessed.
+function describe() {
+  const t = clock(state.minutes);
+  const light = state.sky ? 'direct sun plus sky light' : 'direct sun only';
+  switch (state.mode) {
+    case 'binary': return `Where direct sun reaches the ground at ${t}.`;
+    case 'power': return `Solar power on the ground at ${t}, ${light}.`;
+    case 'energy': return state.untilTime
+      ? `Solar energy received from sunrise to ${t}, ${light}.`
+      : `Solar energy received over the whole day, ${light}.`;
+    case 'sunHours': return state.untilTime
+      ? `Hours of direct sun from sunrise to ${t}.`
+      : 'Hours of direct sun over the whole day.';
+    default: return 'Steepness of the terrain.';
+  }
+}
+
+const timeless = () => state.mode === 'slope' || (cumulative(state.mode) && !state.untilTime);
+
+function updateDescriptions() {
+  el('describe').textContent = describe();
+  const period = cumulative(state.mode) ? (state.untilTime ? ` · to ${clock(state.minutes)}` : ' · whole day') : '';
+  el('controlsSummary').textContent = MODE_NAMES[state.mode] + period;
+  if (timeless()) {
+    if (state.mode === 'slope') {
+      el('timeNote').textContent = 'Slope does not depend on the time of day.';
+    } else {
+      const { rise, set } = sunUpWindow();
+      el('timeNote').textContent = rise == null
+        ? 'Whole day · the sun stays below the horizon.'
+        : `Whole day · sun up ${clock(rise)} to ${clock(set + 1)}. Pick "Since sunrise" to choose a time.`;
+    }
+  }
+}
 
 const timeInput = el('time');
 const setTime = (v) => {
   state.minutes = +v;
   timeInput.value = state.minutes;
-  const label = `${String(Math.floor(v / 60)).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
-  el('timeLabel').textContent = label;
-  el('scopeTime').textContent = label;
+  el('timeLabel').textContent = clock(state.minutes);
   updateSunLine();
+  updateDescriptions();
 };
 setTime(state.minutes);
 
@@ -671,6 +768,7 @@ el('now').addEventListener('click', () => {
   state.date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   el('date').value = toInputValue(state.date);
   setTime(now.getHours() * 60 + now.getMinutes());
+  updateDescriptions();
   render();
   if (state.point) inspect(state.point);
 });
@@ -693,13 +791,16 @@ function selectIn(group, button) {
   });
 }
 
-// The slider only means something when the map depends on the time of day.
+// The slider only exists when the map depends on the time of day; otherwise
+// the time bar says why instead of showing a control that does nothing.
 function syncTimeControls() {
-  const timeless = state.mode === 'slope' || (cumulative(state.mode) && !state.untilTime);
-  el('scope').hidden = !cumulative(state.mode);
-  timeInput.disabled = timeless;
-  el('play').disabled = timeless;
-  if (timeless) stopPlaying();
+  const cum = cumulative(state.mode);
+  el('scope').hidden = !cum;
+  el('skyRow').hidden = !(state.mode === 'power' || state.mode === 'energy');
+  el('timeLive').hidden = timeless();
+  el('timeNote').hidden = !timeless();
+  if (timeless()) stopPlaying();
+  updateDescriptions();
 }
 
 el('layers').querySelectorAll('button').forEach((b) =>
@@ -760,6 +861,7 @@ el('sky').checked = state.sky;
 el('sky').addEventListener('change', (e) => {
   state.sky = e.target.checked;
   try { localStorage.setItem('sunmap.sky', state.sky ? 'on' : 'off'); } catch {}
+  updateDescriptions();
   render();
   if (state.point) inspect(state.point);
 });
@@ -767,6 +869,33 @@ el('sky').addEventListener('change', (e) => {
 el('opacity').addEventListener('input', (e) => {
   state.opacity = e.target.value / 100;
   render();
+});
+
+// Cards collapse to their header, which matters on a phone where they would
+// otherwise cover most of the map. The choice is remembered per browser.
+function collapsible(card, head, key, collapsedByDefault, onOpen) {
+  let collapsed = collapsedByDefault;
+  try { const v = localStorage.getItem(key); if (v) collapsed = v === 'collapsed'; } catch {}
+  const apply = () => {
+    card.classList.toggle('collapsed', collapsed);
+    head.setAttribute('aria-expanded', String(!collapsed));
+  };
+  head.addEventListener('click', () => {
+    collapsed = !collapsed;
+    apply();
+    try { localStorage.setItem(key, collapsed ? 'collapsed' : 'open'); } catch {}
+    if (!collapsed) onOpen?.();
+  });
+  apply();
+}
+
+const onPhone = matchMedia('(max-width: 720px)').matches;
+collapsible(el('controls'), el('controlsHead'), 'sunmap.controls', onPhone);
+// Charts size themselves from layout, so they are redrawn when reopened.
+collapsible(el('inspector'), el('inspectorHead'), 'sunmap.inspector', false, () => state.point && inspect(state.point));
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !el('inspector').hidden) el('closeInspector').click();
 });
 
 el('closeInspector').addEventListener('click', () => {

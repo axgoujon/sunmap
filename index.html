@@ -11,32 +11,39 @@
 <div id="map"></div>
 <canvas id="overlay" hidden></canvas>
 
-<div class="card controls">
-  <h1>Sunmap</h1>
-  <div class="segmented" id="layers" role="radiogroup" aria-label="Layer">
-    <button data-mode="binary" class="active" role="radio" aria-checked="true">Shade</button>
-    <button data-mode="power" role="radio">Power</button>
-    <button data-mode="energy" role="radio">Energy</button>
-    <button data-mode="sunHours" role="radio">Hours</button>
-    <button data-mode="slope" role="radio">Slope</button>
+<div class="card controls" id="controls">
+  <button class="card-head" id="controlsHead" aria-expanded="true" aria-controls="controlsBody">
+    <span class="title">Sunmap</span>
+    <span class="summary" id="controlsSummary"></span>
+    <svg class="chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <div class="card-body" id="controlsBody">
+    <div class="segmented" id="layers" role="radiogroup" aria-label="What to show">
+      <button data-mode="binary" class="active" role="radio" aria-checked="true">Shade</button>
+      <button data-mode="power" role="radio">Power</button>
+      <button data-mode="energy" role="radio">Energy</button>
+      <button data-mode="sunHours" role="radio">Sun hours</button>
+      <button data-mode="slope" role="radio">Slope</button>
+    </div>
+    <div class="segmented two" id="scope" role="radiogroup" aria-label="Period" hidden>
+      <button data-scope="until" role="radio">Since sunrise</button>
+      <button data-scope="day" class="active" role="radio" aria-checked="true">Whole day</button>
+    </div>
+    <p class="describe" id="describe"></p>
+    <div class="legend">
+      <div id="legendBar" class="legend-bar"></div>
+      <div class="legend-labels"><span id="legendMin"></span><span id="legendMax"></span></div>
+    </div>
+    <label class="check-row" id="skyRow">
+      <input type="checkbox" id="sky">
+      <span>Include sky light <em>(diffuse and reflected)</em></span>
+    </label>
+    <label class="slider-row">
+      <span>Opacity</span>
+      <input type="range" id="opacity" min="0" max="100" value="75">
+    </label>
+    <p class="fine">Clear sky model, terrain only (ignores clouds, vegetation and buildings).</p>
   </div>
-  <div class="segmented two" id="scope" role="radiogroup" aria-label="Period" hidden>
-    <button data-scope="day" class="active" role="radio" aria-checked="true">Whole day</button>
-    <button data-scope="until" role="radio">Until <span id="scopeTime">11:00</span></button>
-  </div>
-  <div class="legend">
-    <div id="legendBar" class="legend-bar"></div>
-    <div class="legend-labels"><span id="legendMin"></span><span id="legendMax"></span></div>
-  </div>
-  <label class="check-row">
-    <input type="checkbox" id="sky">
-    <span>Include sky light <em>(diffuse and reflected)</em></span>
-  </label>
-  <label class="slider-row">
-    <span>Opacity</span>
-    <input type="range" id="opacity" min="0" max="100" value="75">
-  </label>
-  <p class="fine">Clear sky model, terrain only (ignores clouds, vegetation and buildings).</p>
 </div>
 
 <div class="card zoom-hint" id="zoomHint" hidden>
@@ -49,31 +56,39 @@
 
 <div class="card inspector" id="inspector" hidden>
   <div class="inspector-head">
-    <span id="pointTitle">Point</span>
-    <button id="closeInspector" class="icon" aria-label="Close">
-      <svg width="14" height="14" viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    <button class="card-head" id="inspectorHead" aria-expanded="true" aria-controls="inspectorBody">
+      <span class="title" id="pointTitle">Point</span>
+      <svg class="chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="closeInspector" class="icon close" aria-label="Close location details">
+      <svg width="16" height="16" viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </button>
   </div>
-  <dl id="pointStats" class="stats"></dl>
-  <figure>
-    <canvas id="curve"></canvas>
-    <figcaption>Irradiance through the day, W/m² · <span class="key sun"></span>direct sun<span id="skyKey"> <span class="key sky"></span>sky light</span></figcaption>
-  </figure>
-  <figure>
-    <canvas id="horizonPlot"></canvas>
-    <figcaption>Horizon and sun path by bearing · dashed: solstices</figcaption>
-  </figure>
+  <div class="card-body" id="inspectorBody">
+    <dl id="pointStats" class="stats"></dl>
+    <figure>
+      <canvas id="curve"></canvas>
+      <figcaption>Irradiance through the day, W/m² · <span class="key sun"></span>direct sun<span id="skyKey"> <span class="key sky"></span>sky light</span></figcaption>
+    </figure>
+    <figure>
+      <canvas id="horizonPlot"></canvas>
+      <figcaption>Horizon and sun path by bearing · <span class="key band"></span>sun's range over the year</figcaption>
+    </figure>
+  </div>
 </div>
 
 <div class="card timebar">
   <input type="date" id="date" aria-label="Date">
   <button id="now">Now</button>
-  <button id="play" class="icon" aria-label="Play through the day"></button>
-  <input type="range" id="time" min="0" max="1439" step="5" value="660" aria-label="Time of day">
-  <div class="clock">
-    <output id="timeLabel">11:00</output>
-    <span id="sunInfo"></span>
+  <div class="time-live" id="timeLive">
+    <button id="play" class="icon" aria-label="Play through the day"></button>
+    <input type="range" id="time" min="0" max="1439" step="5" value="660" aria-label="Time of day">
+    <div class="clock">
+      <output id="timeLabel">11:00</output>
+      <span id="sunInfo"></span>
+    </div>
   </div>
+  <div class="time-note" id="timeNote" hidden></div>
 </div>
 
 <div id="status" class="status"></div>
