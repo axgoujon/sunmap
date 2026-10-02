@@ -919,8 +919,44 @@ map.on('click', (e) => inspect(e.lngLat));
 // Terrain only needs the style (to add the overlay source), not the first
 // complete basemap render that 'load' waits for; starting here fetches both
 // in parallel instead of in sequence.
-if (map.isStyleLoaded()) loadForView();
-else map.once('style.load', () => loadForView());
+// ------------------------------------------------------------------ basemap
+
+// OpenTopoMap: relief, contours, peaks and huts, which is what ski touring
+// needs. Its operators welcome embedding as long as nobody bulk-downloads
+// tiles, so nothing here prefetches them. Licence CC-BY-SA, attribution kept.
+const TOPO = {
+  tiles: ['a', 'b', 'c'].map((s) => `https://${s}.tile.opentopomap.org/{z}/{x}/{y}.png`),
+  maxzoom: 17,
+  attribution: 'Map: © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA), © OpenStreetMap contributors, SRTM',
+};
+let streetLayers = [];
+
+function setBasemap(kind) {
+  state.basemap = kind;
+  // Hidden layers do not fetch tiles, so the unused map costs nothing.
+  for (const id of streetLayers) map.setLayoutProperty(id, 'visibility', kind === 'streets' ? 'visible' : 'none');
+  map.setLayoutProperty('topo', 'visibility', kind === 'topo' ? 'visible' : 'none');
+  selectIn(el('basemap'), el('basemap').querySelector(`[data-basemap=${kind}]`));
+  try { localStorage.setItem('sunmap.basemap', kind); } catch {}
+}
+
+function onStyleReady() {
+  streetLayers = map.getStyle().layers.map((l) => l.id);
+  map.addSource('topo', { type: 'raster', tiles: TOPO.tiles, tileSize: 256, maxzoom: TOPO.maxzoom, attribution: TOPO.attribution });
+  // Added before the sun overlay exists, so the overlay always draws above it.
+  map.addLayer({ id: 'topo', type: 'raster', source: 'topo', paint: { 'raster-fade-duration': 150 } });
+  let kind = 'topo';
+  try { kind = localStorage.getItem('sunmap.basemap') || 'topo'; } catch {}
+  setBasemap(kind);
+  loadForView();
+}
+
+el('basemap').querySelectorAll('button').forEach((b) =>
+  b.addEventListener('click', () => setBasemap(b.dataset.basemap))
+);
+
+if (map.isStyleLoaded()) onStyleReady();
+else map.once('style.load', onStyleReady);
 
 let moveTimer;
 map.on('moveend', () => {

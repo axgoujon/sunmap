@@ -155,3 +155,7 @@ figcaption { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .time-live { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; }
 .time-note { flex: 1; font-size: 12px; color: var(--muted); line-height: 1.3; }
 .key.band { background: rgba(232, 145, 45, .22); border: 1px dashed rgba(214, 128, 36, .55); }
+
+.segmented.compact { margin-top: 0; flex: 1; }
+.slider-row + .slider-row, .slider-row + label.slider-row { margin-top: 10px; }
+.slider-row > span:first-child { flex: 0 0 48px; }

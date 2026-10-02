@@ -38,6 +38,13 @@
       <input type="checkbox" id="sky">
       <span>Include diffuse sky light</span>
     </label>
+    <div class="slider-row">
+      <span>Map</span>
+      <div class="segmented two compact" id="basemap" role="radiogroup" aria-label="Base map">
+        <button data-basemap="topo" class="active" role="radio" aria-checked="true">Topo</button>
+        <button data-basemap="streets" role="radio">Streets</button>
+      </div>
+    </div>
     <label class="slider-row">
       <span>Opacity</span>
       <input type="range" id="opacity" min="0" max="100" value="75">
