@@ -855,11 +855,11 @@ async function play() {
 el('play').innerHTML = PLAY_ICON;
 el('play').addEventListener('click', () => (state.playing ? stopPlaying() : play()));
 
-try { state.sky = localStorage.getItem('sunmap.sky') === 'on'; } catch {}
+// Always starts off: the default view is the direct beam alone.
+try { localStorage.removeItem('sunmap.sky'); } catch {}
 el('sky').checked = state.sky;
 el('sky').addEventListener('change', (e) => {
   state.sky = e.target.checked;
-  try { localStorage.setItem('sunmap.sky', state.sky ? 'on' : 'off'); } catch {}
   updateDescriptions();
   render();
   if (state.point) inspect(state.point);
