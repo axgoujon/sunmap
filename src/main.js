@@ -1,6 +1,7 @@
 import { loadHeightfield, pixelOf, slopeAspect, contains, elevationAt } from './terrain.js';
 import { decodeImage } from './decode.js';
 import { Renderer, MODES } from './renderer.js';
+import { OverlayLayer } from './overlay-layer.js';
 import { sunPosition } from './solar.js';
 import { clearSky, surfaceIrradiance, integrate } from './radiation.js';
 import { horizonProfile, horizonAt, skyViewFactor, directBeamFactor, maxHeight } from './horizon.js';
@@ -166,9 +167,7 @@ function farStillValid(far, plan, lat, lon) {
 }
 
 function setOverlayVisible(visible) {
-  if (map.getLayer('sun')) {
-    map.setLayoutProperty('sun', 'visibility', visible ? 'visible' : 'none');
-  }
+  overlayLayer?.setVisible(visible);
 }
 
 function tooFarOut() {
@@ -271,22 +270,17 @@ function useTerrain(hf, far, outScale) {
   setOverlayVisible(true);
 }
 
+let overlayLayer = null;
+
 function attachOverlay(hf) {
-  const coordinates = [
-    [hf.bounds.west, hf.bounds.north],
-    [hf.bounds.east, hf.bounds.north],
-    [hf.bounds.east, hf.bounds.south],
-    [hf.bounds.west, hf.bounds.south],
-  ];
-  if (map.getSource('sun')) {
-    map.getSource('sun').setCoordinates(coordinates);
-  } else {
-    map.addSource('sun', { type: 'canvas', canvas: 'overlay', coordinates, animate: false });
-    map.addLayer({ id: 'sun', type: 'raster', source: 'sun', paint: { 'raster-opacity': 1, 'raster-fade-duration': 0 } });
+  if (!overlayLayer) {
+    overlayLayer = new OverlayLayer('sun', canvas);
+    map.addLayer(overlayLayer);
   }
+  overlayLayer.setMosaic(hf);
 }
 
-const repaint = () => map.getSource('sun')?.play?.() ?? map.triggerRepaint();
+const repaint = () => overlayLayer?.update();
 
 // ------------------------------------------------------------- rendering
 
